@@ -1,0 +1,12 @@
+# Prior art
+
+| Project | What it does | What henge borrows | How henge differs |
+| --- | --- | --- | --- |
+| [Husk](https://github.com/Leviidev/Husk) | Runs Android apps on iPhone. Two modes: a translation layer (native execution) and emulation via QEMU | Translation-layer design (focus on game engines, ANGLE / MoltenVK, page placement, checks for TLS and x18) | Husk maps ELF directly into a JIT region, so it requires debugger-enabled JIT. henge converts and signs ahead of time, so no JIT is needed |
+| [apk-on-iphone (LiquidAPK)](https://github.com/heyobi/apk-on-iphone) | Runs unmodified ART and AOSP framework on an AArch64 interpreter. No JIT required | Its own binder and servicemanager, faking services without system_server, AOT via dex2oat | LiquidAPK interprets every instruction (about 80–90M instructions/s). henge runs at native speed |
+| [LiveContainer](https://github.com/LiveContainer/LiveContainer) | Runs other iOS apps inside a single host app without reinstalling them | On-device signing, importing certificates from SideStore, `dlopen` from the container | It loads iOS apps. henge loads converted Android ELFs |
+| [SideStore](https://github.com/SideStore/SideStore) / AltStore | Sideloads iOS apps without a PC (except the first time) and re-signs them every 7 days | How to distribute the host app and obtain certificates | — |
+| [Android Translation Layer (ATL)](https://gitlab.com/android_translation_layer/android_translation_layer) | Runs Android apps on Linux. Reimplements ART and the framework | Scope of NDK API and JNI implementation, framework reimplementation strategy | ATL targets Linux (glibc). henge targets iOS and does not use ATL code (GPL-3.0) |
+| [libhybris](https://github.com/libhybris/libhybris) | Loads Android `.so` files built for bionic (mainly GPU drivers) on glibc Linux | Loading bionic libraries with its own ELF linker and swapping libc for a shim | libhybris can mmap ELF as-is. henge must convert to Mach-O and sign |
+| Wine | Runs Windows programs on Linux and macOS by reimplementing OS APIs | The idea of "same CPU, swap only the OS layer" | — |
+| [N64Recomp](https://github.com/N64Recomp/N64Recomp) / [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) | Statically recompiles console binaries to run on PC | Proof that an AOT conversion approach can be practical | Different CPUs require instruction translation. henge has the same CPU, so only file-format conversion is needed |
