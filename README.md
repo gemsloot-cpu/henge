@@ -1,40 +1,51 @@
 # henge
 
-iPhone 単体で Android アプリ（APK）のネイティブコードを動かす実験プロジェクト。
-JIT もデバッガも脱獄も使わず、APK を **iPhone 上で Mach-O に変換し、自分の証明書で署名して読み込む**。
+![henge](docs/images/hero.png)
 
-設計: [docs/architecture.md](docs/architecture.md)
+An experimental project to run the native code of Android apps (APKs) on an iPhone alone.
+No JIT, no debugger, no jailbreak: henge **converts the APK to Mach-O on the iPhone, signs it with your own certificate, and loads it**.
 
-## 方針
+Design: [docs/architecture.md](docs/architecture.md)
 
-- **事前変換（AOT）**: Android も iPhone も ARM64 なので、機械語は翻訳しない。ELF を Mach-O に詰め替えて署名するだけで、署名済みのネイティブコードとして実行できる。
-- **オンデバイス**: 変換・署名・読み込みを iPhone 上のホストアプリで完結させる。利用者に Mac は要らない（開発には Xcode が要る）。
-- **コンテナ型**: LiveContainer と同じく、ホストアプリが変換済み dylib を `dlopen` する。アプリごとの再インストールは不要。
-- **範囲を絞る**: まずは Java を使わないネイティブゲーム（NativeActivity / SDL2 / Godot など）。ART（Java/Kotlin）対応は後回し。
+## Approach
 
-## ドキュメント
+- **Ahead-of-time conversion (AOT)**: Android and iPhone are both ARM64, so machine code is not translated. Repacking the ELF as Mach-O and signing it is enough to run it as signed native code.
+- **On-device**: Conversion, signing, and loading all happen inside a host app on the iPhone. Users do not need a Mac (development requires Xcode).
+- **Container model**: Like LiveContainer, the host app `dlopen`s the converted dylibs. No per-app reinstall is needed.
+- **Narrow scope**: Start with native games that do not use Java (NativeActivity / SDL2 / Godot, etc.). ART (Java/Kotlin) support comes later.
 
-| パス | 内容 |
+## Design docs
+
+| Path | Contents |
 | --- | --- |
-| [docs/architecture.md](docs/architecture.md) | 全体設計、コンポーネント、実行時の流れ |
-| [docs/m1-elf-to-macho.md](docs/m1-elf-to-macho.md) | M1: ELF → Mach-O 変換とミニリンカの詳細設計 |
-| [docs/abi-differences.md](docs/abi-differences.md) | Android (AAPCS64 / bionic) と Darwin arm64 の差分と対処 |
-| [docs/roadmap.md](docs/roadmap.md) | マイルストーンと完了条件、要検証項目 |
-| [docs/prior-art.md](docs/prior-art.md) | 先行プロジェクトと henge との違い |
+| [docs/architecture.md](docs/architecture.md) | Overall design, components, runtime flow |
+| [docs/m1-elf-to-macho.md](docs/m1-elf-to-macho.md) | M1: detailed design of ELF → Mach-O conversion and the mini linker |
+| [docs/roadmap.md](docs/roadmap.md) | Milestones, exit criteria, items to verify |
 
-## 予定している構成
+## Research
 
-まだコードはない。M1 で次の形を作る。
-
-| パス | 内容 |
+| Path | Contents |
 | --- | --- |
-| `convert/` | ELF → Mach-O 変換器（C、依存なし。macOS でもテストできる） |
-| `runtime/` | ミニリンカ、bionic 互換シム、Android API シム（C） |
-| `app/` | iOS ホストアプリ（SwiftUI）。APK 取り込み・変換・署名・起動 |
-| `samples/` | NDK で作るテスト用 `.so` |
-| `tests/` | 変換器とミニリンカのテスト（macOS 上で実行） |
+| [research/abi-differences.md](research/abi-differences.md) | Differences between Android (AAPCS64 / bionic) and Darwin arm64, and how to handle them |
+| [research/prior-art.md](research/prior-art.md) | Prior projects and how henge differs |
 
-## 注意
+## Planned layout
 
-- 自分でビルドした `.so` や、オープンソース・無料の APK で試すこと。
-- 市販アプリを変換したものを配布しない。DRM の回避は目的にしない。
+There is no code yet. M1 will create the following structure.
+
+| Path | Contents |
+| --- | --- |
+| `convert/` | ELF → Mach-O converter (C, no dependencies; testable on macOS too) |
+| `runtime/` | Mini linker, bionic compatibility shim, Android API shim (C) |
+| `app/` | iOS host app (SwiftUI): APK import, conversion, signing, launch |
+| `samples/` | Test `.so` files built with the NDK |
+| `tests/` | Tests for the converter and mini linker (run on macOS) |
+
+## Notes
+
+- Try it with `.so` files you built yourself, or with open-source / free APKs.
+- Do not distribute converted commercial apps. Circumventing DRM is not a goal.
+
+## Credits
+
+- The Android robot in [docs/images/hero.png](docs/images/hero.png) is reproduced or modified from work created and shared by Google and used according to terms described in the [Creative Commons 3.0 Attribution License](https://creativecommons.org/licenses/by/3.0/).
