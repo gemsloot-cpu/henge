@@ -76,10 +76,11 @@ void hc_scan_free(struct scan_result *s);
 
 /* ---- dynsym.c: dynamic symbol table ---- */
 
-/* Undefined dynamic symbols. *out is malloc'd (names too). Returns 0, or -1 when out of memory
- * or the tables are malformed. */
-int hc_elf_imports(const struct elf_info *e, struct henge_import **out, size_t *n, char *err, size_t errlen);
-void hc_imports_free(struct henge_import *imports, size_t n);
+/* Undefined (defined = 0) or exported (defined = 1) global/weak dynamic symbols. *out is
+ * malloc'd (names too). Returns 0, or -1 when out of memory or the tables are malformed. */
+int hc_elf_symbols(const struct elf_info *e, int defined, struct henge_symbol **out, size_t *n, char *err,
+                   size_t errlen);
+void hc_symbols_free(struct henge_symbol *imports, size_t n);
 
 /* ---- macho_writer.c ---- */
 
@@ -93,7 +94,7 @@ int hc_macho_write(const struct elf_info *e, const struct henge_convert_opts *op
 
 /* Returns the malloc'd manifest JSON, or NULL when out of memory. */
 char *hc_manifest_build(const struct elf_info *e, const struct henge_convert_opts *opts,
-                        const struct scan_result *scan, const struct henge_import *imports,
+                        const struct scan_result *scan, const struct henge_symbol *imports,
                         size_t nimports);
 
 #endif

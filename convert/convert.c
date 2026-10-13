@@ -39,8 +39,10 @@ int henge_convert(const uint8_t *elf, size_t elf_size, const struct henge_conver
 
     struct scan_result scan;
     if (hc_scan_code(&e, &scan, err, errlen) != 0) return -1;
-    if (hc_elf_imports(&e, &out->imports, &out->nimports, err, errlen) != 0) {
+    if (hc_elf_symbols(&e, 0, &out->imports, &out->nimports, err, errlen) != 0 ||
+        hc_elf_symbols(&e, 1, &out->exports, &out->nexports, err, errlen) != 0) {
         hc_scan_free(&scan);
+        henge_convert_result_free(out);
         return -1;
     }
     out->svc_count = scan.svc_count;
@@ -62,6 +64,7 @@ int henge_convert(const uint8_t *elf, size_t elf_size, const struct henge_conver
 void henge_convert_result_free(struct henge_convert_result *res) {
     free(res->macho);
     free(res->manifest_json);
-    hc_imports_free(res->imports, res->nimports);
+    hc_symbols_free(res->imports, res->nimports);
+    hc_symbols_free(res->exports, res->nexports);
     memset(res, 0, sizeof *res);
 }

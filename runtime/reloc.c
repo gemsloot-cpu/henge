@@ -1,6 +1,8 @@
 /* ELF dynamic relocations: RELA/JMPREL and RELR (docs/m1-elf-to-macho.md §5). */
 #include "internal.h"
 
+#include <stdlib.h>
+
 static int check_target_n(const henge_image *im, uintptr_t p, size_t n, char *err, size_t errlen)
 {
     if (p < im->w_lo || p + n > im->w_hi || (p & 7) != 0)
@@ -181,5 +183,89 @@ int hr_apply_relr(henge_image *im, const uint64_t *relr, size_t count, char *err
             where += 63 * 8;
         }
     }
+    return 0;
+}
+
+/* ---- Android packed relocations (APS2, DT_ANDROID_RELA) ----
+ * "APS2" then SLEB128s: count, initial offset, then groups of
+ * {size, flags, [offset delta], [info], [addend delta]} each followed by per-relocation
+ * fields not covered by the group. Same decoder as bionic's packed_reloc_iterator. */
+
+#define APS2_BY_INFO 1
+#define APS2_BY_OFFSET_DELTA 2
+#define APS2_BY_ADDEND 4
+#define APS2_HAS_ADDEND 8
+
+struct sleb {
+    const uint8_t *p, *end;
+    int bad;
+};
+
+static int64_t sleb_next(struct sleb *d)
+{
+    uint64_t v = 0;
+    unsigned shift = 0;
+    uint8_t b;
+    do {
+        if (d->p >= d->end || shift >= 64) {
+            d->bad = 1;
+            return 0;
+        }
+        b = *d->p++;
+        v |= (uint64_t)(b & 0x7f) << shift;
+        shift += 7;
+    } while (b & 0x80);
+    if (shift < 64 && (b & 0x40))
+        v |= ~0ull << shift;
+    return (int64_t)v;
+}
+
+int hr_decode_aps2(const uint8_t *data, size_t size, Elf64_Rela **out, size_t *count, char *err,
+                   size_t errlen)
+{
+    *out = NULL;
+    *count = 0;
+    if (size < 4 || data[0] != 'A' || data[1] != 'P' || data[2] != 'S' || data[3] != '2')
+        return hr_fail(err, errlen, "DT_ANDROID_RELA without APS2 header");
+    struct sleb d = {data + 4, data + size, 0};
+    int64_t n = sleb_next(&d);
+    /* Each relocation takes at least one byte of input. */
+    if (d.bad || n < 0 || (uint64_t)n > size)
+        return hr_fail(err, errlen, "bad APS2 relocation count");
+    Elf64_Rela *rel = calloc((size_t)n ? (size_t)n : 1, sizeof *rel);
+    if (!rel)
+        return hr_fail(err, errlen, "out of memory");
+    Elf64_Rela cur = {(uint64_t)sleb_next(&d), 0, 0};
+    size_t i = 0;
+    while (i < (size_t)n && !d.bad) {
+        int64_t gsize = sleb_next(&d), flags = sleb_next(&d), odelta = 0;
+        if (gsize <= 0 || (uint64_t)gsize > (uint64_t)n - i) {
+            d.bad = 1;
+            break;
+        }
+        if (flags & APS2_BY_OFFSET_DELTA)
+            odelta = sleb_next(&d);
+        if (flags & APS2_BY_INFO)
+            cur.r_info = (uint64_t)sleb_next(&d);
+        int64_t af = flags & (APS2_HAS_ADDEND | APS2_BY_ADDEND);
+        if (af == (APS2_HAS_ADDEND | APS2_BY_ADDEND))
+            cur.r_addend += sleb_next(&d);
+        else if (af != APS2_HAS_ADDEND)
+            cur.r_addend = 0;
+        for (int64_t k = 0; k < gsize && !d.bad; k++) {
+            cur.r_offset += (flags & APS2_BY_OFFSET_DELTA) ? (uint64_t)odelta : (uint64_t)sleb_next(&d);
+            if (!(flags & APS2_BY_INFO))
+                cur.r_info = (uint64_t)sleb_next(&d);
+            if (af == APS2_HAS_ADDEND)
+                cur.r_addend += sleb_next(&d);
+            rel[i++] = cur;
+        }
+    }
+    if (d.bad) {
+        free(rel);
+        return hr_fail(err, errlen, "malformed APS2 relocations");
+    }
+    *out = rel;
+    *count = i;
     return 0;
 }

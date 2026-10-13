@@ -35,7 +35,7 @@ APP_DD  := $(B)/app/dd
 APP_OUT := $(APP_DD)/Build/Products/Debug-iphonesimulator/henge.app
 
 .DEFAULT_GOAL := all
-.PHONY: all help samples tests test test-layout test-m1 test-patch app-dylib app app-run clean
+.PHONY: all help samples tests test test-layout test-m1 test-patch test-dl app-dylib app app-run clean
 
 all: $(B)/henge-convert $(B)/libhenge-runtime.a samples tests ## build the converter, runtime, sample and tests
 
@@ -73,11 +73,21 @@ $(B)/libhenge-runtime.a: $(RUNTIME_OBJS)
 	$(AR) rcs $@ $^
 
 # ---- samples (Android NDK) ----
-samples: $(B)/samples/libadd.so $(B)/samples/libpatch.so ## build sample .so files with the NDK
+samples: $(B)/samples/libadd.so $(B)/samples/libpatch.so $(B)/samples/libdep.so ## build sample .so files with the NDK
 
 $(B)/samples/libadd.so: samples/libadd/add.c
 	@mkdir -p $(@D)
 	$(NDK_CC) $(NDK_FLAGS) -o $@ $<
+
+# libdep.so needs libbase.so; both use Android packed relocations (APS2).
+PACKED := -Wl,--pack-dyn-relocs=android
+$(B)/samples/libbase.so: samples/libdep/base.c
+	@mkdir -p $(@D)
+	$(NDK_CC) $(NDK_FLAGS) $(PACKED) -Wl,-soname,libbase.so -o $@ $<
+
+$(B)/samples/libdep.so: samples/libdep/dep.c $(B)/samples/libbase.so
+	@mkdir -p $(@D)
+	$(NDK_CC) $(NDK_FLAGS) $(PACKED) -o $@ $< -L$(B)/samples -lbase
 
 # API 29+ so __thread uses ELF TLS (TLSDESC); every function gets a stack protector.
 $(B)/samples/libpatch.so: samples/libpatch/patch.c samples/libpatch/regcheck.S
@@ -85,13 +95,17 @@ $(B)/samples/libpatch.so: samples/libpatch/patch.c samples/libpatch/regcheck.S
 	$(NDK_CC) $(NDK_FLAGS) --target=aarch64-linux-android29 -fstack-protector-all -o $@ $^
 
 # ---- tests (macOS) ----
-tests: $(B)/tests/test_m1 $(B)/tests/test_layout $(B)/tests/test_patch
+tests: $(B)/tests/test_m1 $(B)/tests/test_layout $(B)/tests/test_patch $(B)/tests/test_dl
 
 $(B)/tests/test_m1: tests/test_m1.c $(B)/libhenge-runtime.a $(PUBLIC_HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $< $(B)/libhenge-runtime.a -o $@
 
 $(B)/tests/test_patch: tests/test_patch.c $(B)/libhenge-runtime.a $(PUBLIC_HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $< $(B)/libhenge-runtime.a -o $@
+
+$(B)/tests/test_dl: tests/test_dl.c $(B)/libhenge-runtime.a $(PUBLIC_HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $< $(B)/libhenge-runtime.a -o $@
 
@@ -116,13 +130,25 @@ $(B)/tests/libpatch.dylib: $(B)/samples/libpatch.so $(B)/henge-convert
 test-patch: $(B)/tests/test_patch $(B)/tests/libpatch.dylib ## run patched svc / tpidr_el0 / TLS / IFUNC code on macOS
 	$(B)/tests/test_patch $(B)/tests/libpatch.dylib
 
+# Converted libdep + libbase in their own directory (the test's library path).
+.PHONY: $(B)/tests/dl
+$(B)/tests/dl: $(B)/samples/libdep.so $(B)/samples/libbase.so $(B)/henge-convert
+	@mkdir -p $@
+	for l in libdep libbase; do \
+	  $(B)/henge-convert --platform macos $(CONVERT_FLAGS) -o $@/$$l.dylib $(B)/samples/$$l.so && \
+	  codesign -s - -f $@/$$l.dylib || exit 1; \
+	done
+
+test-dl: $(B)/tests/test_dl $(B)/tests/dl ## DT_NEEDED loading, APS2 and libdl on macOS
+	$(B)/tests/test_dl $(B)/tests/dl
+
 test-layout: $(B)/tests/test_layout $(B)/tests/libadd.dylib ## check the converted Mach-O layout
 	$(B)/tests/test_layout $(B)/samples/libadd.so $(B)/tests/libadd.dylib
 
 test-m1: $(B)/tests/test_m1 $(B)/tests/libadd.dylib ## dlopen + henge_link + call libadd on macOS
 	$(B)/tests/test_m1 $(B)/tests/libadd.dylib
 
-test: test-layout test-m1 test-patch ## run all macOS tests
+test: test-layout test-m1 test-patch test-dl ## run all macOS tests
 	@echo "ALL TESTS PASSED"
 
 # ---- iOS host app (app/) ----

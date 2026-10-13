@@ -44,7 +44,7 @@ static void sb_json_str(struct sbuf *b, const char *s, size_t maxlen) {
 }
 
 char *hc_manifest_build(const struct elf_info *e, const struct henge_convert_opts *opts,
-                        const struct scan_result *scan, const struct henge_import *imports,
+                        const struct scan_result *scan, const struct henge_symbol *imports,
                         size_t nimports) {
     const Elf64_Dyn *dyn = e->dyn;
     const char *dynstr = e->dynstr;

@@ -85,6 +85,27 @@ uintptr_t hr_sym_addr(const henge_image *im, const Elf64_Sym *s)
     return a;
 }
 
+uint64_t hr_symbol_count(const henge_image *im)
+{
+    if (im->hash)
+        return im->hash[1];
+    if (!im->gnu_hash)
+        return 0;
+    const uint32_t *h = im->gnu_hash;
+    uint32_t nbuckets = h[0], symoffset = h[1], bloom_size = h[2];
+    const uint32_t *buckets = (const uint32_t *)((const uint64_t *)(h + 4) + bloom_size);
+    const uint32_t *chain = buckets + nbuckets;
+    uint32_t max = 0;
+    for (uint32_t i = 0; i < nbuckets; i++)
+        if (buckets[i] > max)
+            max = buckets[i];
+    if (max < symoffset)
+        return symoffset;
+    while (!(chain[max - symoffset] & 1))
+        max++;
+    return (uint64_t)max + 1;
+}
+
 void *henge_dlsym(henge_image *image, const char *name)
 {
     if (!image || !name)

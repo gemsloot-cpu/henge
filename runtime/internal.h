@@ -36,17 +36,33 @@ struct henge_image {
     uintptr_t w_lo, w_hi; /* writable range [w_lo, w_hi) */
     uint64_t nsyms;       /* .dynsym entries if known (DT_HASH), else 0 */
     struct hr_tls_module *tls; /* PT_TLS, or NULL */
+    const Elf64_Phdr *phdr;
+    uint16_t phnum;
+    uintptr_t end;        /* base + end of the last PT_LOAD */
+    struct henge_image **deps; /* linked DT_NEEDED images (shim-backed ones are not listed) */
+    size_t ndeps;
     struct henge_image *next;
 };
 
-/* Linked images in load order (head = first loaded). Guarded by linker.c's lock. */
+/* Linked images in load order (head = first loaded). Guarded by hr_lock. */
 extern henge_image *hr_images;
+void hr_lock(void);
+void hr_unlock(void);
+
+/* linker.c: dlopen + link by path or soname (caller holds hr_lock). */
+henge_image *hr_load_locked(const char *name, char *err, size_t errlen);
+/* Nonzero if `name` (e.g. "libm.so") is a system library backed by the shim. */
+int hr_is_system_lib(const char *name);
+/* The linked image containing addr, or NULL. */
+henge_image *hr_image_for_addr(uintptr_t addr);
 
 /* Formats a message into err (if non-NULL) and returns -1. */
 int hr_fail(char *err, size_t errlen, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 /* symbols.c */
 const Elf64_Sym *hr_lookup_sym(const henge_image *im, const char *name);
+/* .dynsym entry count from DT_HASH or by walking DT_GNU_HASH. */
+uint64_t hr_symbol_count(const henge_image *im);
 /* Runtime address of a defined symbol; calls the resolver for STT_GNU_IFUNC. */
 uintptr_t hr_sym_addr(const henge_image *im, const Elf64_Sym *s);
 /* Global lookup for an undefined symbol: shim first, then linked images. Returns 1 if found. */
@@ -78,6 +94,9 @@ uintptr_t hr_call_ifunc(uintptr_t resolver);
 /* irelative_pass 0: everything but IRELATIVE; 1: IRELATIVE only. */
 int hr_apply_rela(henge_image *im, const Elf64_Rela *rel, size_t count, uint64_t nsyms,
                   int irelative_pass, char *err, size_t errlen);
+/* Decodes DT_ANDROID_RELA (APS2) into a malloc'd RELA array. */
+int hr_decode_aps2(const uint8_t *data, size_t size, Elf64_Rela **out, size_t *count, char *err,
+                   size_t errlen);
 int hr_apply_relr(henge_image *im, const uint64_t *relr, size_t count, char *err, size_t errlen);
 
 #endif

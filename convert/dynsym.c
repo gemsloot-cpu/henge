@@ -1,4 +1,4 @@
-/* Dynamic symbol table: the list of imports (undefined symbols) for the manifest and
+/* Dynamic symbol table: imports (undefined symbols) and exports for the manifest and
  * compatibility reports. The symbol count comes from DT_HASH, else from walking DT_GNU_HASH. */
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +38,8 @@ static uint64_t symbol_count(const struct elf_info *e, uint64_t hash, uint64_t g
     }
 }
 
-int hc_elf_imports(const struct elf_info *e, struct henge_import **out, size_t *n, char *err, size_t errlen) {
+int hc_elf_symbols(const struct elf_info *e, int defined, struct henge_symbol **out, size_t *n, char *err,
+                   size_t errlen) {
     *out = NULL;
     *n = 0;
     uint64_t symtab = 0, syment = sizeof(Elf64_Sym), hash = 0, gnu_hash = 0;
@@ -58,20 +59,20 @@ int hc_elf_imports(const struct elf_info *e, struct henge_import **out, size_t *
     if (nsyms > (1u << 24) || hc_vaddr_to_off(e, symtab, nsyms * sizeof(Elf64_Sym), &off) != 0)
         return hc_fail(err, errlen, "DT_SYMTAB does not map to file data");
 
-    struct henge_import *imp = NULL;
+    struct henge_symbol *imp = NULL;
     size_t count = 0, cap = 0;
     for (uint64_t i = 1; i < nsyms; i++) {
         Elf64_Sym s;
         memcpy(&s, e->data + off + i * sizeof s, sizeof s);
         unsigned bind = ELF64_ST_BIND(s.st_info);
-        if (s.st_shndx != SHN_UNDEF || (bind != STB_GLOBAL && bind != STB_WEAK) || s.st_name == 0 ||
-            s.st_name >= e->strsz)
+        if ((s.st_shndx != SHN_UNDEF) != (defined != 0) || (bind != STB_GLOBAL && bind != STB_WEAK) ||
+            s.st_name == 0 || s.st_name >= e->strsz)
             continue;
         const char *name = e->dynstr + s.st_name;
         size_t len = strnlen(name, (size_t)(e->strsz - s.st_name));
         if (count == cap) {
             cap = cap ? cap * 2 : 64;
-            struct henge_import *ni = realloc(imp, cap * sizeof *ni);
+            struct henge_symbol *ni = realloc(imp, cap * sizeof *ni);
             if (!ni) goto oom;
             imp = ni;
         }
@@ -79,17 +80,17 @@ int hc_elf_imports(const struct elf_info *e, struct henge_import **out, size_t *
         if (!copy) goto oom;
         memcpy(copy, name, len);
         copy[len] = 0;
-        imp[count++] = (struct henge_import){copy, bind == STB_WEAK};
+        imp[count++] = (struct henge_symbol){copy, bind == STB_WEAK};
     }
     *out = imp;
     *n = count;
     return 0;
 oom:
-    hc_imports_free(imp, count);
+    hc_symbols_free(imp, count);
     return hc_fail(err, errlen, "out of memory");
 }
 
-void hc_imports_free(struct henge_import *imports, size_t n) {
+void hc_symbols_free(struct henge_symbol *imports, size_t n) {
     for (size_t i = 0; i < n; i++) free(imports[i].name);
     free(imports);
 }

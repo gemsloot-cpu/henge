@@ -48,7 +48,7 @@ struct henge_convert_opts {
     int link_libsystem;       /* nonzero: add LC_LOAD_DYLIB /usr/lib/libSystem.B.dylib (V5 fallback) */
 };
 
-struct henge_import {
+struct henge_symbol {
     char *name;
     int weak;
 };
@@ -62,8 +62,10 @@ struct henge_convert_result {
     unsigned x18_count;   /* instructions using x18 (Darwin's platform register); warning only */
     int shadow_call_stack; /* the x18 uses look like Shadow Call Stack prologues */
     int has_tls;          /* PT_TLS present */
-    struct henge_import *imports; /* undefined dynamic symbols */
+    struct henge_symbol *imports; /* undefined dynamic symbols */
     size_t nimports;
+    struct henge_symbol *exports; /* defined global/weak dynamic symbols */
+    size_t nexports;
 };
 
 /* Returns 0 on success. On failure, writes a message to err and returns -1. */
@@ -75,9 +77,18 @@ void henge_convert_result_free(struct henge_convert_result *res);
 
 typedef struct henge_image henge_image;
 
-/* Call after dlopen(path). Finds the image in dyld's list, resolves NEEDED, applies
- * relocations, and runs DT_INIT / DT_INIT_ARRAY. Returns NULL on failure (see err). */
+/* Call after dlopen(path). Finds the image in dyld's list, loads DT_NEEDED dependencies
+ * (henge_set_library_path), applies relocations, and runs DT_INIT / DT_INIT_ARRAY.
+ * Returns NULL on failure (see err). */
 henge_image *henge_link(const char *path, char *err, size_t errlen);
+
+/* Colon-separated directories searched for converted dependencies: DT_NEEDED or dlopen of
+ * "libfoo.so" loads "<dir>/libfoo.dylib". */
+void henge_set_library_path(const char *dirs);
+
+/* dlopen + henge_link by path or by Android library name ("libfoo.so", searched along the
+ * library path). Already linked images are returned as-is. */
+henge_image *henge_load(const char *name, char *err, size_t errlen);
 
 /* Looks up an exported symbol via DT_GNU_HASH (or DT_HASH). */
 void *henge_dlsym(henge_image *image, const char *name);

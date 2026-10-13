@@ -1,4 +1,5 @@
 /* henge-convert CLI. */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,34 +52,51 @@ static void print_warnings(const char *path, const struct henge_convert_result *
                 path, r->x18_count, r->shadow_call_stack ? " (Shadow Call Stack; unsupported)" : "");
 }
 
-/* --check: convert in memory and report what blocks or limits running the library. */
-static int check(const char *path) {
-    size_t size;
-    uint8_t *elf = read_file(path, &size);
-    if (!elf) { perror(path); return 1; }
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    struct henge_convert_opts opts = {.platform = HENGE_PLATFORM_IOS, .install_name = base};
-    struct henge_convert_result r;
-    char err[512];
-    int rc = henge_convert(elf, size, &opts, &r, err, sizeof err);
-    free(elf);
-    if (rc != 0) {
-        printf("%s: NOT CONVERTIBLE: %s\n", path, err);
-        return 1;
-    }
-    size_t missing = 0;
-    for (size_t i = 0; i < r.nimports; i++)
-        if (!henge_shim_provides(r.imports[i].name)) missing++;
-    printf("%s: convertible; svc %u, tpidr_el0 %u, x18 %u%s, TLS %s; imports %zu, not in shim %zu\n", path,
-           r.svc_count, r.tpidr_count, r.x18_count, r.shadow_call_stack ? " (SCS)" : "", r.has_tls ? "yes" : "no",
-           r.nimports, missing);
-    for (size_t i = 0; i < r.nimports; i++)
-        if (!henge_shim_provides(r.imports[i].name))
-            printf("  missing %s%s\n", r.imports[i].name, r.imports[i].weak ? " (weak)" : "");
-    print_warnings(path, &r);
-    henge_convert_result_free(&r);
+/* --check: convert every input in memory and report what blocks or limits running it.
+ * Imports count as satisfied if the shim or any other input exports them. */
+static int has_export(const struct henge_convert_result *r, int n, const char *name) {
+    for (int i = 0; i < n; i++)
+        for (size_t k = 0; k < r[i].nexports; k++)
+            if (!strcmp(r[i].exports[k].name, name)) return 1;
     return 0;
+}
+
+static int check(int n, char **paths) {
+    struct henge_convert_result *r = calloc((size_t)n, sizeof *r);
+    char (*errs)[512] = calloc((size_t)n, sizeof *errs);
+    int *ok = calloc((size_t)n, sizeof *ok), rc = 0;
+    if (!r || !errs || !ok) { fprintf(stderr, "henge-convert: out of memory\n"); return 1; }
+    for (int i = 0; i < n; i++) {
+        size_t size;
+        uint8_t *elf = read_file(paths[i], &size);
+        if (!elf) { snprintf(errs[i], sizeof errs[i], "%s", strerror(errno)); continue; }
+        const char *base = strrchr(paths[i], '/');
+        struct henge_convert_opts opts = {.platform = HENGE_PLATFORM_IOS, .install_name = base ? base + 1 : paths[i]};
+        ok[i] = henge_convert(elf, size, &opts, &r[i], errs[i], sizeof errs[i]) == 0;
+        free(elf);
+    }
+    for (int i = 0; i < n; i++) {
+        if (!ok[i]) {
+            printf("%s: NOT CONVERTIBLE: %s\n", paths[i], errs[i]);
+            rc = 1;
+            continue;
+        }
+        size_t missing = 0;
+        for (size_t k = 0; k < r[i].nimports; k++)
+            if (!henge_shim_provides(r[i].imports[k].name) && !has_export(r, n, r[i].imports[k].name)) missing++;
+        printf("%s: convertible; svc %u, tpidr_el0 %u, x18 %u%s, TLS %s; imports %zu, unresolved %zu\n", paths[i],
+               r[i].svc_count, r[i].tpidr_count, r[i].x18_count, r[i].shadow_call_stack ? " (SCS)" : "",
+               r[i].has_tls ? "yes" : "no", r[i].nimports, missing);
+        for (size_t k = 0; k < r[i].nimports; k++)
+            if (!henge_shim_provides(r[i].imports[k].name) && !has_export(r, n, r[i].imports[k].name))
+                printf("  unresolved %s%s\n", r[i].imports[k].name, r[i].imports[k].weak ? " (weak)" : "");
+        print_warnings(paths[i], &r[i]);
+    }
+    for (int i = 0; i < n; i++) henge_convert_result_free(&r[i]);
+    free(r);
+    free(errs);
+    free(ok);
+    return rc;
 }
 
 int main(int argc, char **argv) {
@@ -87,9 +105,7 @@ int main(int argc, char **argv) {
 
     if (argc > 1 && !strcmp(argv[1], "--check")) {
         if (argc < 3) usage();
-        int rc = 0;
-        for (int i = 2; i < argc; i++) rc |= check(argv[i]);
-        return rc;
+        return check(argc - 2, argv + 2);
     }
 
     for (int i = 1; i < argc; i++) {

@@ -54,6 +54,11 @@ static int (*tls_buf_sum)(void);
 static void *(*read_tp)(void);
 static unsigned long (*stack_guard)(void);
 
+/* Threads stay alive until all have recorded their pointers, so freed blocks are not reused. */
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
+static int g_arrived;
+
 static void *thread_main(void *arg) {
     struct thread_result *r = arg;
     r->counter_ok = 1;
@@ -63,6 +68,11 @@ static void *thread_main(void *arg) {
     r->tp = read_tp();
     r->guard = stack_guard();
     r->counter_addr = tls_counter_addr();
+    pthread_mutex_lock(&g_mu);
+    g_arrived++;
+    pthread_cond_broadcast(&g_cv);
+    while (g_arrived < 4) pthread_cond_wait(&g_cv, &g_mu);
+    pthread_mutex_unlock(&g_mu);
     return NULL;
 }
 
