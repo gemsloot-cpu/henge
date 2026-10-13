@@ -23,6 +23,8 @@ vaddr
 
 (When linked with 16 KiB alignment, each `PT_LOAD` starts at a multiple of 0x4000.)
 
+In practice, NDK r29 (lld) merges R and RX into a single `R E` `PT_LOAD` at vaddr 0, and the RW `PT_LOAD`s are not 16 KiB-aligned (e.g. 0x4820 and 0x8a40 for `libadd.so`). They still start on a different 16 KiB page from the code, which is all the converter needs.
+
 ## 3. Output Mach-O layout
 
 ![ELF to Mach-O layout](images/elf-to-macho.png)
@@ -81,7 +83,7 @@ After `dlopen`, the host app calls `henge_link(path)`.
 ```
 1. Find the image whose path matches using _dyld_image_count / _dyld_get_image_name,
    and get its header address
-2. base = header - H          (the address corresponding to ELF vaddr 0)
+2. base = header + H          (the address corresponding to ELF vaddr 0)
 3. Read .dynamic from base + PT_DYNAMIC vaddr
 4. Load DT_NEEDED first (in M1 only libc.so, backed by the shim)
 5. Process relocations

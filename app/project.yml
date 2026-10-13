@@ -1,0 +1,53 @@
+# XcodeGen spec for the henge iOS host app. Generate with: cd app && xcodegen
+name: henge
+options:
+  deploymentTarget:
+    iOS: "16.0"
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  henge:
+    type: application
+    platform: iOS
+    sources:
+      - path: HengeHost
+      - path: ../runtime
+        group: runtime
+      # Converted by `make app-dylib` (pre-build phase below); embedded + signed into Frameworks/.
+      - path: ../build/app/libadd.dylib
+        group: Frameworks
+        optional: true
+        buildPhase:
+          copyFiles:
+            destination: frameworks
+        attributes: [CodeSignOnCopy]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(HENGE_BUNDLE_ID_PREFIX).henge
+        PRODUCT_NAME: henge
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        # Merged with the generated plist; holds the .apk UTImportedTypeDeclarations.
+        INFOPLIST_FILE: HengeHost/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: henge
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_OBJC_BRIDGING_HEADER: HengeHost/Core/henge-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/../include
+        GCC_C_LANGUAGE_STANDARD: c11
+        LD_RUNPATH_SEARCH_PATHS: $(inherited) @executable_path/Frameworks
+    preBuildScripts:
+      - name: Convert libadd.so (make app-dylib)
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/../build/app/libadd.dylib
+        script: |
+          exec "$SRCROOT/../scripts/app-prebuild.sh"

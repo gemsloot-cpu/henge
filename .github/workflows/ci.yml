@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Converter + linker (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r29
+
+      - name: make test
+        env:
+          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: make test NDK_ROOT="$NDK_ROOT"
+
+  ios-simulator:
+    name: Host app (iOS Simulator)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r29
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Pick a simulator
+        run: |
+          SIM=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | sed 's/ *$//')
+          echo "Using simulator: $SIM"
+          echo "SIM=$SIM" >> "$GITHUB_ENV"
+
+      - name: Build app
+        env:
+          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: make app NDK_ROOT="$NDK_ROOT" SIM="$SIM"
+
+      - name: Run M1 checks in the simulator
+        env:
+          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: make app-run NDK_ROOT="$NDK_ROOT" SIM="$SIM"
