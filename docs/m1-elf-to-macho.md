@@ -123,6 +123,8 @@ In M1 it is fine to use `codesign` on a Mac (bundled into the app by the Xcode b
 | M1b | Copied to the container's `Library/` | Copy a Mac-signed dylib (confirms `dlopen` from the container) |
 | M2 | The container's `Library/` | Signed on the iPhone |
 
+henge has its own ad-hoc signer (`henge_sign_adhoc` in `convert/sign.c`, `henge-convert --sign`). It writes the same structure as `codesign -s -`: a SuperBlob holding a SHA-256 CodeDirectory (4 KiB pages), an empty requirements blob and an empty CMS wrapper, and it adds or replaces `LC_CODE_SIGNATURE`. The macOS tests sign with it and check the result with `codesign -v`. An ad-hoc signature is enough on macOS and the iOS Simulator. A device needs an identity signature (a CMS blob signed with the user's certificate), which is not implemented yet.
+
 ## 7. Exit criteria
 
 - [ ] `libadd.so` can be converted with `henge-convert`

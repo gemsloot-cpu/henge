@@ -35,6 +35,12 @@ struct henge_convert_result {
 int henge_convert(const uint8_t *elf, size_t elf_size, const struct henge_convert_opts *opts,
                   struct henge_convert_result *out, char *err, size_t errlen);
 
+/* Ad-hoc signs a thin arm64 Mach-O (like `codesign -s -`), replacing any existing
+ * signature. identifier goes into the CodeDirectory. *out is malloc'd; caller frees.
+ * Returns 0 on success, -1 with a message in err on failure. */
+int henge_sign_adhoc(const uint8_t *macho, size_t size, const char *identifier, uint8_t **out,
+                     size_t *out_size, char *err, size_t errlen);
+
 /* ---- runtime (runtime/) ---- */
 
 typedef struct henge_image henge_image;
