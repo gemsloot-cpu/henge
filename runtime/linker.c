@@ -4,12 +4,8 @@
  * locates the original ELF headers inside it, resolves DT_NEEDED, applies the ELF
  * dynamic relocations and runs the initializers.
  */
-#define _DARWIN_C_SOURCE
-#include "henge/elf64.h"
-#include "henge/henge.h"
-#include "shim.h"
+#include "internal.h"
 
-#include <limits.h>
 #include <mach-o/dyld.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -17,24 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct henge_image {
-    char path[PATH_MAX];
-    const char *soname; /* DT_SONAME, may be NULL */
-    uintptr_t base;     /* runtime address of ELF vaddr 0 */
-    const Elf64_Dyn *dynamic;
-    const Elf64_Sym *symtab;
-    const char *strtab;
-    uint64_t strsz;
-    const uint32_t *gnu_hash;
-    const uint32_t *hash;
-    uintptr_t w_lo, w_hi; /* writable range [w_lo, w_hi) */
-    struct henge_image *next;
-};
-
 static pthread_mutex_t g_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER; /* initializers may call henge_link */
-static henge_image *g_images; /* load order (head = first loaded) */
+henge_image *hr_images; /* load order (head = first loaded) */
 
-static int fail(char *err, size_t errlen, const char *fmt, ...)
+int hr_fail(char *err, size_t errlen, const char *fmt, ...)
 {
     if (err && errlen) {
         va_list ap;
@@ -43,107 +25,6 @@ static int fail(char *err, size_t errlen, const char *fmt, ...)
         va_end(ap);
     }
     return -1;
-}
-
-/* ---- symbol lookup ---- */
-
-static uint32_t gnu_hash_name(const char *s)
-{
-    uint32_t h = 5381;
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
-        h = h * 33 + *p;
-    return h;
-}
-
-static uint32_t elf_hash_name(const char *s)
-{
-    uint32_t h = 0, g;
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        h = (h << 4) + *p;
-        g = h & 0xf0000000u;
-        if (g)
-            h ^= g >> 24;
-        h &= ~g;
-    }
-    return h;
-}
-
-static int sym_exported(const henge_image *im, const Elf64_Sym *s, const char *name)
-{
-    unsigned bind = ELF64_ST_BIND(s->st_info);
-    if (s->st_shndx == SHN_UNDEF || (bind != STB_GLOBAL && bind != STB_WEAK))
-        return 0;
-    if (s->st_name >= im->strsz)
-        return 0;
-    return strcmp(im->strtab + s->st_name, name) == 0;
-}
-
-static const Elf64_Sym *lookup_sym(const henge_image *im, const char *name)
-{
-    if (im->gnu_hash) {
-        const uint32_t *h = im->gnu_hash;
-        uint32_t nbuckets = h[0], symoffset = h[1], bloom_size = h[2], bloom_shift = h[3];
-        const uint64_t *bloom = (const uint64_t *)(h + 4);
-        const uint32_t *buckets = (const uint32_t *)(bloom + bloom_size);
-        const uint32_t *chain = buckets + nbuckets;
-        uint32_t hv = gnu_hash_name(name);
-
-        if (nbuckets == 0 || bloom_size == 0)
-            return NULL;
-        uint64_t word = bloom[(hv / 64) % bloom_size];
-        uint64_t mask = (1ull << (hv % 64)) | (1ull << ((hv >> bloom_shift) % 64));
-        if ((word & mask) != mask)
-            return NULL;
-        uint32_t i = buckets[hv % nbuckets];
-        if (i < symoffset)
-            return NULL;
-        for (;; i++) {
-            uint32_t ch = chain[i - symoffset];
-            if ((ch | 1) == (hv | 1) && sym_exported(im, &im->symtab[i], name))
-                return &im->symtab[i];
-            if (ch & 1)
-                break;
-        }
-        return NULL;
-    }
-    if (im->hash) {
-        uint32_t nbucket = im->hash[0];
-        const uint32_t *bucket = im->hash + 2;
-        const uint32_t *chain = bucket + nbucket;
-        if (nbucket == 0)
-            return NULL;
-        for (uint32_t i = bucket[elf_hash_name(name) % nbucket]; i != 0; i = chain[i]) {
-            if (sym_exported(im, &im->symtab[i], name))
-                return &im->symtab[i];
-        }
-    }
-    return NULL;
-}
-
-void *henge_dlsym(henge_image *image, const char *name)
-{
-    if (!image || !name)
-        return NULL;
-    const Elf64_Sym *s = lookup_sym(image, name);
-    return s ? (void *)(image->base + s->st_value) : NULL;
-}
-
-/* Global lookup for an undefined symbol: shim first, then linked images in load order. */
-static int resolve_global(const char *name, uintptr_t *out)
-{
-    void *p = henge_shim_lookup(name);
-    if (p) {
-        *out = (uintptr_t)p;
-        return 1;
-    }
-    for (henge_image *im = g_images; im; im = im->next) {
-        const Elf64_Sym *s = lookup_sym(im, name);
-        if (s) {
-            *out = im->base + s->st_value;
-            return 1;
-        }
-    }
-    return 0;
 }
 
 /* ---- DT_NEEDED ---- */
@@ -159,7 +40,7 @@ static int needed_satisfied(const char *needed)
     for (size_t i = 0; i < sizeof k_system_libs / sizeof k_system_libs[0]; i++)
         if (strcmp(needed, k_system_libs[i]) == 0)
             return 1; /* backed by the shim */
-    for (henge_image *im = g_images; im; im = im->next) {
+    for (henge_image *im = hr_images; im; im = im->next) {
         if (im->soname && strcmp(im->soname, needed) == 0)
             return 1;
         /* Fall back to comparing basenames, ignoring the extension (.so vs .dylib). */
@@ -168,115 +49,6 @@ static int needed_satisfied(const char *needed)
         size_t n = strcspn(needed, ".");
         if (n > 0 && strncmp(b, needed, n) == 0 && b[n] == '.')
             return 1;
-    }
-    return 0;
-}
-
-/* ---- relocation ---- */
-
-static int check_target(const henge_image *im, uintptr_t p, char *err, size_t errlen)
-{
-    if (p < im->w_lo || p + 8 > im->w_hi || (p & 7) != 0)
-        return fail(err, errlen, "relocation target 0x%llx (vaddr 0x%llx) outside writable segment",
-                    (unsigned long long)p, (unsigned long long)(p - im->base));
-    return 0;
-}
-
-static int symbol_value(henge_image *im, uint32_t symidx, uint64_t nsyms, uintptr_t *out,
-                        char *err, size_t errlen)
-{
-    if (symidx == 0) {
-        *out = 0;
-        return 0;
-    }
-    if (nsyms && symidx >= nsyms)
-        return fail(err, errlen, "symbol index %u out of range", symidx);
-    const Elf64_Sym *s = &im->symtab[symidx];
-    if (s->st_name >= im->strsz)
-        return fail(err, errlen, "bad symbol name offset");
-    const char *name = im->strtab + s->st_name;
-    if (ELF64_ST_TYPE(s->st_info) == 6 /* STT_TLS */)
-        return fail(err, errlen, "TLS symbol %s: not supported until M2", name);
-    if (s->st_shndx != SHN_UNDEF) {
-        *out = im->base + s->st_value;
-        return 0;
-    }
-    if (resolve_global(name, out))
-        return 0;
-    if (ELF64_ST_BIND(s->st_info) == STB_WEAK) {
-        *out = 0;
-        return 0;
-    }
-    return fail(err, errlen, "undefined symbol: %s", name);
-}
-
-static int apply_rela(henge_image *im, const Elf64_Rela *rel, size_t count, uint64_t nsyms,
-                      char *err, size_t errlen)
-{
-    for (size_t i = 0; i < count; i++) {
-        const Elf64_Rela *r = &rel[i];
-        uint32_t type = ELF64_R_TYPE(r->r_info);
-        uintptr_t p = im->base + r->r_offset;
-        uintptr_t s;
-
-        switch (type) {
-        case R_AARCH64_NONE:
-            continue;
-        case R_AARCH64_RELATIVE:
-            if (check_target(im, p, err, errlen))
-                return -1;
-            *(uint64_t *)p = im->base + (uint64_t)r->r_addend;
-            break;
-        case R_AARCH64_GLOB_DAT:
-        case R_AARCH64_ABS64:
-        case R_AARCH64_JUMP_SLOT:
-            if (check_target(im, p, err, errlen))
-                return -1;
-            if (symbol_value(im, ELF64_R_SYM(r->r_info), nsyms, &s, err, errlen))
-                return -1;
-            /* JUMP_SLOT: *P = S (eager). Addends are 0 in practice; ignore as bionic does. */
-            *(uint64_t *)p = type == R_AARCH64_JUMP_SLOT ? s : s + (uint64_t)r->r_addend;
-            break;
-        case R_AARCH64_TLS_TPREL64:
-        case R_AARCH64_TLSDESC:
-        case R_AARCH64_IRELATIVE:
-            return fail(err, errlen, "relocation type %u at 0x%llx: not supported until M2", type,
-                        (unsigned long long)r->r_offset);
-        default:
-            return fail(err, errlen, "unknown relocation type %u at 0x%llx", type,
-                        (unsigned long long)r->r_offset);
-        }
-    }
-    return 0;
-}
-
-/* Standard RELR: an even word is an address (relocate it, then continue after it); an odd
- * word is a bitmap of the next 63 words. Each relocated word gets base added. */
-static int apply_relr(henge_image *im, const uint64_t *relr, size_t count, char *err,
-                      size_t errlen)
-{
-    uintptr_t where = 0;
-    for (size_t i = 0; i < count; i++) {
-        uint64_t e = relr[i];
-        if ((e & 1) == 0) {
-            where = im->base + e;
-            if (check_target(im, where, err, errlen))
-                return -1;
-            *(uint64_t *)where += im->base;
-            where += 8;
-        } else {
-            if (where == 0)
-                return fail(err, errlen, "RELR bitmap without preceding address");
-            uintptr_t p = where;
-            for (uint64_t bits = e >> 1; bits; bits >>= 1, p += 8) {
-                if (bits & 1) {
-                    if (check_target(im, p, err, errlen))
-                        return -1;
-                    *(uint64_t *)p += im->base;
-                }
-            }
-            where += 63 * 8;
-        }
     }
     return 0;
 }
@@ -311,10 +83,10 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
     char resolved[PATH_MAX];
     const struct mach_header *mh = find_header(path, resolved);
     if (!mh) {
-        fail(err, errlen, "%s: image not found in dyld image list (dlopen it first)", path);
+        hr_fail(err, errlen, "%s: image not found in dyld image list (dlopen it first)", path);
         return NULL;
     }
-    for (henge_image *im = g_images; im; im = im->next)
+    for (henge_image *im = hr_images; im; im = im->next)
         if (strcmp(im->path, resolved) == 0)
             return im; /* already linked */
 
@@ -323,11 +95,11 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
     if (eh->e_ident[0] != ELFMAG0 || memcmp(eh->e_ident + 1, "ELF", 3) != 0 ||
         eh->e_ident[4] != ELFCLASS64 || eh->e_ident[5] != ELFDATA2LSB ||
         eh->e_machine != EM_AARCH64 || eh->e_type != ET_DYN) {
-        fail(err, errlen, "%s: no arm64 ELF header at Mach-O header + 0x%x", path, HENGE_SHIFT);
+        hr_fail(err, errlen, "%s: no arm64 ELF header at Mach-O header + 0x%x", path, HENGE_SHIFT);
         return NULL;
     }
     if (eh->e_phentsize != sizeof(Elf64_Phdr)) {
-        fail(err, errlen, "%s: unexpected e_phentsize %u", path, eh->e_phentsize);
+        hr_fail(err, errlen, "%s: unexpected e_phentsize %u", path, eh->e_phentsize);
         return NULL;
     }
 
@@ -343,18 +115,18 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
             if (ph[i].p_vaddr + ph[i].p_memsz > w_hi)
                 w_hi = ph[i].p_vaddr + ph[i].p_memsz;
         } else if (ph[i].p_type == PT_TLS) {
-            fail(err, errlen, "%s: PT_TLS not supported until M2", path);
+            hr_fail(err, errlen, "%s: PT_TLS not supported until M2", path);
             return NULL;
         }
     }
     if (!dyn_ph) {
-        fail(err, errlen, "%s: no PT_DYNAMIC", path);
+        hr_fail(err, errlen, "%s: no PT_DYNAMIC", path);
         return NULL;
     }
 
     henge_image *im = calloc(1, sizeof *im);
     if (!im) {
-        fail(err, errlen, "out of memory");
+        hr_fail(err, errlen, "out of memory");
         return NULL;
     }
     memcpy(im->path, resolved, PATH_MAX);
@@ -392,27 +164,27 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
         case DT_FLAGS: flags = d->d_val; break;
         case DT_TEXTREL: textrel = 1; break;
         case DT_ANDROID_REL: case DT_ANDROID_RELA:
-            fail(err, errlen, "%s: Android packed relocations (APS2) not supported until M2", path);
+            hr_fail(err, errlen, "%s: Android packed relocations (APS2) not supported until M2", path);
             goto bad;
         default: break;
         }
     }
     if (textrel || (flags & DF_TEXTREL)) {
-        fail(err, errlen, "%s: DT_TEXTREL not supported", path);
+        hr_fail(err, errlen, "%s: DT_TEXTREL not supported", path);
         goto bad;
     }
     if (!im->strtab || !im->symtab || (!im->gnu_hash && !im->hash)) {
-        fail(err, errlen, "%s: missing DT_STRTAB/DT_SYMTAB/hash table", path);
+        hr_fail(err, errlen, "%s: missing DT_STRTAB/DT_SYMTAB/hash table", path);
         goto bad;
     }
     if (soname && soname < im->strsz)
         im->soname = im->strtab + soname;
     if ((relasz && relaent != sizeof(Elf64_Rela)) || (relrsz && relrent != 8)) {
-        fail(err, errlen, "%s: unexpected relocation entry size", path);
+        hr_fail(err, errlen, "%s: unexpected relocation entry size", path);
         goto bad;
     }
     if (jmprel && pltrelsz && pltrel != DT_RELA) {
-        fail(err, errlen, "%s: DT_PLTREL is not DT_RELA", path);
+        hr_fail(err, errlen, "%s: DT_PLTREL is not DT_RELA", path);
         goto bad;
     }
 
@@ -424,28 +196,28 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
         if (d->d_tag != DT_NEEDED)
             continue;
         if (d->d_val >= im->strsz) {
-            fail(err, errlen, "%s: bad DT_NEEDED", path);
+            hr_fail(err, errlen, "%s: bad DT_NEEDED", path);
             goto bad;
         }
         const char *needed = im->strtab + d->d_val;
         if (!needed_satisfied(needed)) {
-            fail(err, errlen, "%s: needed library %s is not linked (link it first)", path, needed);
+            hr_fail(err, errlen, "%s: needed library %s is not linked (link it first)", path, needed);
             goto bad;
         }
     }
 
     /* 2. Relocations. RELR first (RELATIVE only), then RELA, then JMPREL. */
-    if (relr && apply_relr(im, (const uint64_t *)(base + relr), relrsz / 8, err, errlen))
+    if (relr && hr_apply_relr(im, (const uint64_t *)(base + relr), relrsz / 8, err, errlen))
         goto bad;
-    if (rela && apply_rela(im, (const Elf64_Rela *)(base + rela), relasz / sizeof(Elf64_Rela),
-                           nsyms, err, errlen))
+    if (rela && hr_apply_rela(im, (const Elf64_Rela *)(base + rela), relasz / sizeof(Elf64_Rela),
+                              nsyms, err, errlen))
         goto bad;
-    if (jmprel && apply_rela(im, (const Elf64_Rela *)(base + jmprel),
-                             pltrelsz / sizeof(Elf64_Rela), nsyms, err, errlen))
+    if (jmprel && hr_apply_rela(im, (const Elf64_Rela *)(base + jmprel),
+                                pltrelsz / sizeof(Elf64_Rela), nsyms, err, errlen))
         goto bad;
 
     /* Register before running initializers so later images can resolve against it. */
-    henge_image **tail = &g_images;
+    henge_image **tail = &hr_images;
     while (*tail)
         tail = &(*tail)->next;
     *tail = im;
@@ -473,7 +245,7 @@ henge_image *henge_link(const char *path, char *err, size_t errlen)
     if (err && errlen)
         err[0] = '\0';
     if (!path) {
-        fail(err, errlen, "path is NULL");
+        hr_fail(err, errlen, "path is NULL");
         return NULL;
     }
     pthread_mutex_lock(&g_lock);
