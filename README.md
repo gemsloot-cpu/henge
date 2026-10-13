@@ -7,6 +7,8 @@
 An experimental project to run the native code of Android apps (APKs) on an iPhone alone.
 No JIT, no debugger, no jailbreak: henge **converts the APK's `.so` files to Mach-O, signs them with your own certificate, and loads them** with a small linker.
 
+> **Research project.** For learning and experimentation only. Do not use it for piracy, DRM circumvention, or distributing other people's apps. See [Disclaimer](#disclaimer).
+
 ## Approach
 
 - **Ahead-of-time conversion (AOT)**: Android and iPhone are both ARM64, so machine code is not translated. Repacking the ELF as Mach-O and signing it is enough to run it as signed native code.
@@ -83,10 +85,17 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `make test` and t
 | [research/abi-differences.md](research/abi-differences.md) | Android (AAPCS64 / bionic) vs Darwin arm64 differences and how to handle them |
 | [research/prior-art.md](research/prior-art.md) | Prior projects and how henge differs |
 
-## Notes
+## Disclaimer
 
-- Try it with `.so` files you built yourself, or with open-source / free APKs.
-- Do not distribute converted commercial apps. Circumventing DRM is not a goal.
+henge is a **research project**. It exists to study how far Android native code can run on iOS within Apple's code-signing rules, and the docs and code are published for learning and discussion.
+
+- **Use only software you have the right to run**: `.so` files you built yourself, or open-source / freely licensed APKs.
+- **Do not use henge for piracy or abuse.** Do not distribute converted apps, bypass DRM, license checks, anti-cheat, or in-app purchases, or use it to violate any app's terms or anyone's rights.
+- **Follow the rules that apply to you**: the licenses of the apps you run, Apple's and Google's terms, and the laws of your country. You are responsible for how you use henge.
+- henge is **not affiliated with or endorsed by** Apple or Google. Android is a trademark of Google LLC; iPhone and iOS are trademarks of Apple Inc.
+- henge is experimental and provided **as is, without warranty of any kind**. It may crash, lose data, or stop working with any iOS update.
+
+If you find henge being used for abuse, or believe something here infringes your rights, please open an issue.
 
 ## Credits
 
