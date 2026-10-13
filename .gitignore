@@ -1,3 +1,4 @@
 build/
 app/*.xcodeproj/
 app/Local.xcconfig
+.claude/

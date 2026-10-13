@@ -25,8 +25,8 @@ B := build
 # be compiled into other hosts (e.g. the iOS app) on its own.
 CONVERT_LIB_SRCS := $(filter-out convert/main.c,$(wildcard convert/*.c))
 CONVERT_LIB_OBJS := $(patsubst convert/%.c,$(B)/convert/%.o,$(CONVERT_LIB_SRCS))
-RUNTIME_SRCS     := $(wildcard runtime/*.c)
-RUNTIME_OBJS     := $(patsubst runtime/%.c,$(B)/runtime/%.o,$(RUNTIME_SRCS))
+RUNTIME_SRCS     := $(wildcard runtime/*.c runtime/*.S)
+RUNTIME_OBJS     := $(patsubst runtime/%,$(B)/runtime/%.o,$(basename $(RUNTIME_SRCS)))
 PUBLIC_HEADERS   := $(wildcard include/henge/*.h)
 CONVERT_HEADERS  := $(PUBLIC_HEADERS) $(wildcard convert/*.h)
 RUNTIME_HEADERS  := $(PUBLIC_HEADERS) $(wildcard runtime/*.h)
@@ -35,7 +35,7 @@ APP_DD  := $(B)/app/dd
 APP_OUT := $(APP_DD)/Build/Products/Debug-iphonesimulator/henge.app
 
 .DEFAULT_GOAL := all
-.PHONY: all help samples tests test test-layout test-m1 app-dylib app app-run clean
+.PHONY: all help samples tests test test-layout test-m1 test-patch app-dylib app app-run clean
 
 all: $(B)/henge-convert $(B)/libhenge-runtime.a samples tests ## build the converter, runtime, sample and tests
 
@@ -56,28 +56,42 @@ $(B)/libhenge-convert.a: $(CONVERT_LIB_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
-$(B)/henge-convert: convert/main.c $(B)/libhenge-convert.a $(PUBLIC_HEADERS)
-	$(CC) $(CFLAGS) $< $(B)/libhenge-convert.a -o $@
+# The CLI links the runtime only for henge_shim_provides (--check reports).
+$(B)/henge-convert: convert/main.c $(B)/libhenge-convert.a $(B)/libhenge-runtime.a $(PUBLIC_HEADERS)
+	$(CC) $(CFLAGS) $< $(B)/libhenge-convert.a $(B)/libhenge-runtime.a -o $@
 
 $(B)/runtime/%.o: runtime/%.c $(RUNTIME_HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(B)/runtime/%.o: runtime/%.S
+	@mkdir -p $(@D)
+	$(CC) -c $< -o $@
 
 $(B)/libhenge-runtime.a: $(RUNTIME_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
 # ---- samples (Android NDK) ----
-samples: $(B)/samples/libadd.so ## build sample .so files with the NDK
+samples: $(B)/samples/libadd.so $(B)/samples/libpatch.so ## build sample .so files with the NDK
 
 $(B)/samples/libadd.so: samples/libadd/add.c
 	@mkdir -p $(@D)
 	$(NDK_CC) $(NDK_FLAGS) -o $@ $<
 
+# API 29+ so __thread uses ELF TLS (TLSDESC); every function gets a stack protector.
+$(B)/samples/libpatch.so: samples/libpatch/patch.c samples/libpatch/regcheck.S
+	@mkdir -p $(@D)
+	$(NDK_CC) $(NDK_FLAGS) --target=aarch64-linux-android29 -fstack-protector-all -o $@ $^
+
 # ---- tests (macOS) ----
-tests: $(B)/tests/test_m1 $(B)/tests/test_layout
+tests: $(B)/tests/test_m1 $(B)/tests/test_layout $(B)/tests/test_patch
 
 $(B)/tests/test_m1: tests/test_m1.c $(B)/libhenge-runtime.a $(PUBLIC_HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $< $(B)/libhenge-runtime.a -o $@
+
+$(B)/tests/test_patch: tests/test_patch.c $(B)/libhenge-runtime.a $(PUBLIC_HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $< $(B)/libhenge-runtime.a -o $@
 
@@ -93,13 +107,22 @@ $(B)/tests/libadd.dylib: $(B)/samples/libadd.so $(B)/henge-convert
 	$(B)/henge-convert --platform macos $(CONVERT_FLAGS) -m $(B)/tests/libadd.manifest.json -o $@ $<
 	codesign -s - -f $@
 
+.PHONY: $(B)/tests/libpatch.dylib
+$(B)/tests/libpatch.dylib: $(B)/samples/libpatch.so $(B)/henge-convert
+	@mkdir -p $(@D)
+	$(B)/henge-convert --platform macos $(CONVERT_FLAGS) -m $(B)/tests/libpatch.manifest.json -o $@ $<
+	codesign -s - -f $@
+
+test-patch: $(B)/tests/test_patch $(B)/tests/libpatch.dylib ## run patched svc / tpidr_el0 / TLS / IFUNC code on macOS
+	$(B)/tests/test_patch $(B)/tests/libpatch.dylib
+
 test-layout: $(B)/tests/test_layout $(B)/tests/libadd.dylib ## check the converted Mach-O layout
 	$(B)/tests/test_layout $(B)/samples/libadd.so $(B)/tests/libadd.dylib
 
 test-m1: $(B)/tests/test_m1 $(B)/tests/libadd.dylib ## dlopen + henge_link + call libadd on macOS
 	$(B)/tests/test_m1 $(B)/tests/libadd.dylib
 
-test: test-layout test-m1 ## run all macOS tests
+test: test-layout test-m1 test-patch ## run all macOS tests
 	@echo "ALL TESTS PASSED"
 
 # ---- iOS host app (app/) ----

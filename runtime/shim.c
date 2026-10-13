@@ -11,6 +11,7 @@
  */
 #define _DARWIN_C_SOURCE
 #include "shim.h"
+#include "henge/henge.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -77,4 +78,9 @@ void *henge_shim_lookup(const char *name)
             return shim_table[i].addr;
     }
     return NULL;
+}
+
+int henge_shim_provides(const char *name)
+{
+    return henge_shim_lookup(name) != NULL;
 }

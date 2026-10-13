@@ -38,7 +38,11 @@ struct elf_info {
     size_t ndyn;
     const char *dynstr;      /* DT_STRTAB, or NULL */
     uint64_t strsz;
+    const Elf64_Phdr *tls_ph; /* PT_TLS, or NULL */
 };
+
+/* Translate an ELF vaddr range to file bytes via the PT_LOADs. Returns 0 on success. */
+int hc_vaddr_to_off(const struct elf_info *e, uint64_t v, uint64_t len, uint64_t *off);
 
 /* Validates the ELF against the M1 input rules (docs/m1-elf-to-macho.md §3) and fills e. */
 int hc_elf_parse(struct elf_info *e, const uint8_t *elf, size_t elf_size, char *err, size_t errlen);
@@ -46,25 +50,50 @@ int hc_elf_parse(struct elf_info *e, const uint8_t *elf, size_t elf_size, char *
 /* LC_UUID value: the GNU build-id if present, else a stable hash of the input bytes. */
 void hc_elf_uuid(const struct elf_info *e, uint8_t uuid[16]);
 
-/* ---- scan.c: instruction scan over executable segments ---- */
+/* ---- scan.c: instruction scan over executable code ---- */
+
+enum { HC_PATCH_SVC = 1, HC_PATCH_TPIDR = 2 };
+
+struct hc_patch {
+    uint64_t vaddr; /* ELF vaddr of the instruction */
+    uint8_t kind;   /* HC_PATCH_* */
+    uint8_t reg;    /* HC_PATCH_TPIDR: destination register */
+};
 
 struct scan_result {
     unsigned svc_count;   /* svc #0 */
     unsigned tpidr_count; /* mrs xN, tpidr_el0 */
+    unsigned x18_count;   /* instructions naming x18 */
+    uint64_t first_x18;   /* vaddr of the first one */
+    int scs;              /* Shadow Call Stack push/pop seen */
+    struct hc_patch *patches; /* in address order; malloc'd */
+    size_t npatches;
 };
 
-void hc_scan_code(const struct elf_info *e, struct scan_result *out);
+/* Fails on code henge cannot patch (msr tpidr_el0, mrs x30, tpidr_el0). */
+int hc_scan_code(const struct elf_info *e, struct scan_result *out, char *err, size_t errlen);
+void hc_scan_free(struct scan_result *s);
+
+/* ---- dynsym.c: dynamic symbol table ---- */
+
+/* Undefined dynamic symbols. *out is malloc'd (names too). Returns 0, or -1 when out of memory
+ * or the tables are malformed. */
+int hc_elf_imports(const struct elf_info *e, struct henge_import **out, size_t *n, char *err, size_t errlen);
+void hc_imports_free(struct henge_import *imports, size_t n);
 
 /* ---- macho_writer.c ---- */
 
-/* Builds the Mach-O dylib (docs/m1-elf-to-macho.md §4). *out is malloc'd on success. */
-int hc_macho_write(const struct elf_info *e, const struct henge_convert_opts *opts, uint8_t **out,
-                   size_t *out_size, char *err, size_t errlen);
+/* Builds the Mach-O dylib (docs/m1-elf-to-macho.md §4), applying the scan's patches
+ * (docs/m2-patching.md). *out is malloc'd on success. */
+int hc_macho_write(const struct elf_info *e, const struct henge_convert_opts *opts,
+                   const struct scan_result *scan, uint8_t **out, size_t *out_size, char *err,
+                   size_t errlen);
 
 /* ---- manifest.c ---- */
 
 /* Returns the malloc'd manifest JSON, or NULL when out of memory. */
 char *hc_manifest_build(const struct elf_info *e, const struct henge_convert_opts *opts,
-                        const struct scan_result *scan);
+                        const struct scan_result *scan, const struct henge_import *imports,
+                        size_t nimports);
 
 #endif

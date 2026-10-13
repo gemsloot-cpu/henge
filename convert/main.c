@@ -8,7 +8,8 @@
 static void usage(void) {
     fprintf(stderr,
             "usage: henge-convert [--platform ios|iossim|macos] [--install-name NAME] [--libsystem]\n"
-            "                     [-m manifest.json] -o out.dylib in.so\n");
+            "                     [-m manifest.json] -o out.dylib in.so\n"
+            "       henge-convert --check in.so...   (compatibility report; writes nothing)\n");
     exit(2);
 }
 
@@ -44,9 +45,52 @@ static int write_file(const char *path, const void *data, size_t size) {
     return rc;
 }
 
+static void print_warnings(const char *path, const struct henge_convert_result *r) {
+    if (r->x18_count)
+        fprintf(stderr, "henge-convert: %s: warning: %u instruction(s) use x18, which Darwin may clobber%s\n",
+                path, r->x18_count, r->shadow_call_stack ? " (Shadow Call Stack; unsupported)" : "");
+}
+
+/* --check: convert in memory and report what blocks or limits running the library. */
+static int check(const char *path) {
+    size_t size;
+    uint8_t *elf = read_file(path, &size);
+    if (!elf) { perror(path); return 1; }
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    struct henge_convert_opts opts = {.platform = HENGE_PLATFORM_IOS, .install_name = base};
+    struct henge_convert_result r;
+    char err[512];
+    int rc = henge_convert(elf, size, &opts, &r, err, sizeof err);
+    free(elf);
+    if (rc != 0) {
+        printf("%s: NOT CONVERTIBLE: %s\n", path, err);
+        return 1;
+    }
+    size_t missing = 0;
+    for (size_t i = 0; i < r.nimports; i++)
+        if (!henge_shim_provides(r.imports[i].name)) missing++;
+    printf("%s: convertible; svc %u, tpidr_el0 %u, x18 %u%s, TLS %s; imports %zu, not in shim %zu\n", path,
+           r.svc_count, r.tpidr_count, r.x18_count, r.shadow_call_stack ? " (SCS)" : "", r.has_tls ? "yes" : "no",
+           r.nimports, missing);
+    for (size_t i = 0; i < r.nimports; i++)
+        if (!henge_shim_provides(r.imports[i].name))
+            printf("  missing %s%s\n", r.imports[i].name, r.imports[i].weak ? " (weak)" : "");
+    print_warnings(path, &r);
+    henge_convert_result_free(&r);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     struct henge_convert_opts opts = {.platform = HENGE_PLATFORM_IOS};
     const char *out_path = NULL, *manifest_path = NULL, *in_path = NULL, *install_name = NULL;
+
+    if (argc > 1 && !strcmp(argv[1], "--check")) {
+        if (argc < 3) usage();
+        int rc = 0;
+        for (int i = 2; i < argc; i++) rc |= check(argv[i]);
+        return rc;
+    }
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -119,9 +163,9 @@ int main(int argc, char **argv) {
         }
         if (!f) { perror(manifest_path); rc = 1; }
     }
-    if (!rc) printf("%s -> %s (%zu bytes): svc %u, tpidr_el0 %u\n", in_path, out_path, res.macho_size,
+    if (!rc) printf("%s -> %s (%zu bytes): svc %u, tpidr_el0 %u patched\n", in_path, out_path, res.macho_size,
                     res.svc_count, res.tpidr_count);
-    free(res.macho);
-    free(res.manifest_json);
+    print_warnings(in_path, &res);
+    henge_convert_result_free(&res);
     return rc;
 }

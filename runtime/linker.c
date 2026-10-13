@@ -7,6 +7,7 @@
 #include "internal.h"
 
 #include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -78,6 +79,51 @@ static const struct mach_header *find_header(const char *path, char *resolved_ou
 
 typedef void (*init_fn)(int, char **, char **);
 
+/* Reads the converter's layout from the Mach-O load commands: H is the __TEXT,__elf address,
+ * the island (if any) is __TEXT,__henge. */
+static int image_layout(const struct mach_header *mh, uint64_t *shift,
+                        const struct henge_island_hdr **island)
+{
+    const struct mach_header_64 *h = (const struct mach_header_64 *)mh;
+    if (h->magic != MH_MAGIC_64)
+        return -1;
+    *shift = 0;
+    *island = NULL;
+    const uint8_t *lc = (const uint8_t *)(h + 1);
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        const struct load_command *c = (const struct load_command *)lc;
+        if (c->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)c;
+            const struct section_64 *sect = (const struct section_64 *)(seg + 1);
+            for (uint32_t k = 0; k < seg->nsects; k++) {
+                if (strcmp(sect[k].segname, "__TEXT") != 0)
+                    continue;
+                if (strncmp(sect[k].sectname, "__elf", 16) == 0)
+                    *shift = sect[k].addr;
+                else if (strncmp(sect[k].sectname, "__henge", 16) == 0)
+                    *island = (const struct henge_island_hdr *)((uintptr_t)mh + sect[k].addr);
+            }
+        }
+        lc += c->cmdsize;
+    }
+    return *shift ? 0 : -1;
+}
+
+/* Fills the island's slots so patched svc / tpidr_el0 sites reach the runtime. */
+static int setup_island(const struct mach_header *mh, const struct henge_island_hdr *is,
+                        const char *path, char *err, size_t errlen)
+{
+    if (is->magic != HENGE_ISLAND_MAGIC || is->version != HENGE_ISLAND_VERSION)
+        return hr_fail(err, errlen, "%s: unknown patch island version (reconvert it)", path);
+    if (is->tpidr_sites && hr_thread_init(err, errlen) != 0)
+        return -1;
+    uintptr_t *slots = (uintptr_t *)((uintptr_t)mh + is->slots_vmaddr);
+    slots[HENGE_SLOT_SVC] = (uintptr_t)hr_svc_entry;
+    slots[HENGE_SLOT_TP_KEY] = hr_tp_key_offset();
+    slots[HENGE_SLOT_TP_SLOW] = (uintptr_t)hr_tp_slow_entry;
+    return 0;
+}
+
 static henge_image *link_locked(const char *path, char *err, size_t errlen)
 {
     char resolved[PATH_MAX];
@@ -90,12 +136,19 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
         if (strcmp(im->path, resolved) == 0)
             return im; /* already linked */
 
-    uintptr_t base = (uintptr_t)mh + HENGE_SHIFT;
+    uint64_t shift;
+    const struct henge_island_hdr *island;
+    if (image_layout(mh, &shift, &island) != 0) {
+        hr_fail(err, errlen, "%s: not a henge image (no __TEXT,__elf section)", path);
+        return NULL;
+    }
+    uintptr_t base = (uintptr_t)mh + shift;
     const Elf64_Ehdr *eh = (const Elf64_Ehdr *)base;
     if (eh->e_ident[0] != ELFMAG0 || memcmp(eh->e_ident + 1, "ELF", 3) != 0 ||
         eh->e_ident[4] != ELFCLASS64 || eh->e_ident[5] != ELFDATA2LSB ||
         eh->e_machine != EM_AARCH64 || eh->e_type != ET_DYN) {
-        hr_fail(err, errlen, "%s: no arm64 ELF header at Mach-O header + 0x%x", path, HENGE_SHIFT);
+        hr_fail(err, errlen, "%s: no arm64 ELF header at Mach-O header + 0x%llx", path,
+                (unsigned long long)shift);
         return NULL;
     }
     if (eh->e_phentsize != sizeof(Elf64_Phdr)) {
@@ -104,7 +157,7 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
     }
 
     const Elf64_Phdr *ph = (const Elf64_Phdr *)(base + eh->e_phoff);
-    const Elf64_Phdr *dyn_ph = NULL;
+    const Elf64_Phdr *dyn_ph = NULL, *tls_ph = NULL;
     uint64_t w_lo = UINT64_MAX, w_hi = 0;
     for (unsigned i = 0; i < eh->e_phnum; i++) {
         if (ph[i].p_type == PT_DYNAMIC)
@@ -115,8 +168,7 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
             if (ph[i].p_vaddr + ph[i].p_memsz > w_hi)
                 w_hi = ph[i].p_vaddr + ph[i].p_memsz;
         } else if (ph[i].p_type == PT_TLS) {
-            hr_fail(err, errlen, "%s: PT_TLS not supported until M2", path);
-            return NULL;
+            tls_ph = &ph[i];
         }
     }
     if (!dyn_ph) {
@@ -190,6 +242,11 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
 
     /* Symbol count from DT_HASH if present (used only for bounds checks). */
     uint64_t nsyms = im->hash ? im->hash[1] : 0;
+    im->nsyms = nsyms;
+    if (island && setup_island(mh, island, path, err, errlen) != 0)
+        goto bad;
+    if (tls_ph && hr_tls_register(im, tls_ph, err, errlen) != 0)
+        goto bad;
 
     /* 1. DT_NEEDED */
     for (const Elf64_Dyn *d = im->dynamic; d->d_tag != DT_NULL; d++) {
@@ -206,15 +263,17 @@ static henge_image *link_locked(const char *path, char *err, size_t errlen)
         }
     }
 
-    /* 2. Relocations. RELR first (RELATIVE only), then RELA, then JMPREL. */
+    /* 2. Relocations. RELR first (RELATIVE only), then RELA, then JMPREL; IRELATIVE last. */
     if (relr && hr_apply_relr(im, (const uint64_t *)(base + relr), relrsz / 8, err, errlen))
         goto bad;
-    if (rela && hr_apply_rela(im, (const Elf64_Rela *)(base + rela), relasz / sizeof(Elf64_Rela),
-                              nsyms, err, errlen))
-        goto bad;
-    if (jmprel && hr_apply_rela(im, (const Elf64_Rela *)(base + jmprel),
-                                pltrelsz / sizeof(Elf64_Rela), nsyms, err, errlen))
-        goto bad;
+    for (int pass = 0; pass < 2; pass++) {
+        if (rela && hr_apply_rela(im, (const Elf64_Rela *)(base + rela), relasz / sizeof(Elf64_Rela),
+                                  nsyms, pass, err, errlen))
+            goto bad;
+        if (jmprel && hr_apply_rela(im, (const Elf64_Rela *)(base + jmprel),
+                                    pltrelsz / sizeof(Elf64_Rela), nsyms, pass, err, errlen))
+            goto bad;
+    }
 
     /* Register before running initializers so later images can resolve against it. */
     henge_image **tail = &hr_images;

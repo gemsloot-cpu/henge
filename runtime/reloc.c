@@ -1,12 +1,64 @@
 /* ELF dynamic relocations: RELA/JMPREL and RELR (docs/m1-elf-to-macho.md §5). */
 #include "internal.h"
 
-static int check_target(const henge_image *im, uintptr_t p, char *err, size_t errlen)
+static int check_target_n(const henge_image *im, uintptr_t p, size_t n, char *err, size_t errlen)
 {
-    if (p < im->w_lo || p + 8 > im->w_hi || (p & 7) != 0)
+    if (p < im->w_lo || p + n > im->w_hi || (p & 7) != 0)
         return hr_fail(err, errlen, "relocation target 0x%llx (vaddr 0x%llx) outside writable segment",
                        (unsigned long long)p, (unsigned long long)(p - im->base));
     return 0;
+}
+
+static int check_target(const henge_image *im, uintptr_t p, char *err, size_t errlen)
+{
+    return check_target_n(im, p, 8, err, errlen);
+}
+
+/* TLSDESC: finds the module and offset of a TLS symbol (symidx 0: this module). */
+static int tls_symbol(henge_image *im, uint32_t symidx, uint64_t nsyms, struct hr_tls_module **mod,
+                      uint64_t *off, char *err, size_t errlen)
+{
+    *mod = im->tls;
+    *off = 0;
+    if (symidx != 0) {
+        if (nsyms && symidx >= nsyms)
+            return hr_fail(err, errlen, "symbol index %u out of range", symidx);
+        const Elf64_Sym *s = &im->symtab[symidx];
+        if (s->st_name >= im->strsz)
+            return hr_fail(err, errlen, "bad symbol name offset");
+        const char *name = im->strtab + s->st_name;
+        if (s->st_shndx != SHN_UNDEF) {
+            *off = s->st_value;
+        } else {
+            *mod = NULL;
+            for (henge_image *o = hr_images; o; o = o->next) {
+                const Elf64_Sym *d = hr_lookup_sym(o, name);
+                if (d && ELF64_ST_TYPE(d->st_info) == STT_TLS) {
+                    *mod = o->tls;
+                    *off = d->st_value;
+                    break;
+                }
+            }
+            if (!*mod)
+                return hr_fail(err, errlen, "undefined TLS symbol: %s", name);
+        }
+    }
+    if (!*mod)
+        return hr_fail(err, errlen, "TLS relocation in an image without PT_TLS");
+    return 0;
+}
+
+/* glibc/bionic ifunc resolver signature on arm64: (hwcap | _IFUNC_ARG_HWCAP, &arg). */
+struct ifunc_arg {
+    uint64_t size, hwcap, hwcap2;
+};
+typedef uintptr_t (*ifunc_resolver)(uint64_t, const struct ifunc_arg *);
+
+uintptr_t hr_call_ifunc(uintptr_t resolver)
+{
+    struct ifunc_arg arg = {sizeof arg, 0, 0};
+    hr_hwcap(&arg.hwcap, &arg.hwcap2);
+    return ((ifunc_resolver)resolver)(arg.hwcap | (1ull << 62) /* _IFUNC_ARG_HWCAP */, &arg);
 }
 
 static int symbol_value(henge_image *im, uint32_t symidx, uint64_t nsyms, uintptr_t *out,
@@ -25,7 +77,7 @@ static int symbol_value(henge_image *im, uint32_t symidx, uint64_t nsyms, uintpt
     if (ELF64_ST_TYPE(s->st_info) == 6 /* STT_TLS */)
         return hr_fail(err, errlen, "TLS symbol %s: not supported until M2", name);
     if (s->st_shndx != SHN_UNDEF) {
-        *out = im->base + s->st_value;
+        *out = hr_sym_addr(im, s);
         return 0;
     }
     if (hr_resolve_global(name, out))
@@ -38,11 +90,14 @@ static int symbol_value(henge_image *im, uint32_t symidx, uint64_t nsyms, uintpt
 }
 
 int hr_apply_rela(henge_image *im, const Elf64_Rela *rel, size_t count, uint64_t nsyms,
-                  char *err, size_t errlen)
+                  int irelative_pass, char *err, size_t errlen)
 {
     for (size_t i = 0; i < count; i++) {
         const Elf64_Rela *r = &rel[i];
         uint32_t type = ELF64_R_TYPE(r->r_info);
+        /* IFUNC resolvers run last, once everything else is relocated (as bionic does). */
+        if ((type == R_AARCH64_IRELATIVE) != (irelative_pass != 0))
+            continue;
         uintptr_t p = im->base + r->r_offset;
         uintptr_t s;
 
@@ -64,11 +119,32 @@ int hr_apply_rela(henge_image *im, const Elf64_Rela *rel, size_t count, uint64_t
             /* JUMP_SLOT: *P = S (eager). Addends are 0 in practice; ignore as bionic does. */
             *(uint64_t *)p = type == R_AARCH64_JUMP_SLOT ? s : s + (uint64_t)r->r_addend;
             break;
+        case R_AARCH64_TLSDESC: {
+            struct hr_tls_module *mod;
+            uint64_t off;
+            if (check_target_n(im, p, 16, err, errlen))
+                return -1;
+            if (tls_symbol(im, ELF64_R_SYM(r->r_info), nsyms, &mod, &off, err, errlen))
+                return -1;
+            void *arg = hr_tlsdesc_arg(mod, off + (uint64_t)r->r_addend);
+            if (!arg)
+                return hr_fail(err, errlen, "out of memory");
+            ((uintptr_t *)p)[0] = (uintptr_t)hr_tlsdesc_entry;
+            ((uintptr_t *)p)[1] = (uintptr_t)arg;
+            /* The access sequence reads tpidr_el0 afterwards: needs the patched thread pointer. */
+            if (hr_thread_init(err, errlen))
+                return -1;
+            break;
+        }
+        case R_AARCH64_IRELATIVE: {
+            if (check_target(im, p, err, errlen))
+                return -1;
+            *(uint64_t *)p = hr_call_ifunc(im->base + (uint64_t)r->r_addend);
+            break;
+        }
         case R_AARCH64_TLS_TPREL64:
-        case R_AARCH64_TLSDESC:
-        case R_AARCH64_IRELATIVE:
-            return hr_fail(err, errlen, "relocation type %u at 0x%llx: not supported until M2", type,
-                           (unsigned long long)r->r_offset);
+            return hr_fail(err, errlen, "static TLS (R_AARCH64_TLS_TPREL64 at 0x%llx) is not supported; "
+                           "only TLSDESC (-fPIC general dynamic) is", (unsigned long long)r->r_offset);
         default:
             return hr_fail(err, errlen, "unknown relocation type %u at 0x%llx", type,
                            (unsigned long long)r->r_offset);

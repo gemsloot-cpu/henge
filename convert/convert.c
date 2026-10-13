@@ -2,8 +2,9 @@
  * Mach-O dylib. Layout and rules: docs/m1-elf-to-macho.md §3–4.
  *
  *   elf_input.c     parse + validate the ELF (§3)
- *   scan.c          instruction scan (svc / tpidr_el0)
- *   macho_writer.c  emit the Mach-O (§4)
+ *   scan.c          instruction scan (svc / tpidr_el0 / x18), docs/m2-patching.md
+ *   dynsym.c        imports from the dynamic symbol table
+ *   macho_writer.c  emit the Mach-O (§4) and the patch island
  *   manifest.c      emit the manifest JSON
  */
 #include <stdarg.h>
@@ -37,25 +38,30 @@ int henge_convert(const uint8_t *elf, size_t elf_size, const struct henge_conver
     if (hc_elf_parse(&e, elf, elf_size, err, errlen) != 0) return -1;
 
     struct scan_result scan;
-    hc_scan_code(&e, &scan);
-    if (scan.svc_count > 0)
-        return hc_fail(err, errlen, "found %u svc #0 instruction(s): svc patching not implemented yet (M2)",
-                       scan.svc_count);
-
-    uint8_t *mo;
-    size_t mo_size;
-    if (hc_macho_write(&e, opts, &mo, &mo_size, err, errlen) != 0) return -1;
-
-    char *manifest = hc_manifest_build(&e, opts, &scan);
-    if (!manifest) {
-        free(mo);
-        return hc_fail(err, errlen, "out of memory");
+    if (hc_scan_code(&e, &scan, err, errlen) != 0) return -1;
+    if (hc_elf_imports(&e, &out->imports, &out->nimports, err, errlen) != 0) {
+        hc_scan_free(&scan);
+        return -1;
     }
-
-    out->macho = mo;
-    out->macho_size = mo_size;
-    out->manifest_json = manifest;
     out->svc_count = scan.svc_count;
     out->tpidr_count = scan.tpidr_count;
-    return 0;
+    out->x18_count = scan.x18_count;
+    out->shadow_call_stack = scan.scs;
+    out->has_tls = e.tls_ph != NULL;
+
+    int rc = hc_macho_write(&e, opts, &scan, &out->macho, &out->macho_size, err, errlen);
+    if (rc == 0) {
+        out->manifest_json = hc_manifest_build(&e, opts, &scan, out->imports, out->nimports);
+        if (!out->manifest_json) rc = hc_fail(err, errlen, "out of memory");
+    }
+    hc_scan_free(&scan);
+    if (rc != 0) henge_convert_result_free(out);
+    return rc;
+}
+
+void henge_convert_result_free(struct henge_convert_result *res) {
+    free(res->macho);
+    free(res->manifest_json);
+    hc_imports_free(res->imports, res->nimports);
+    memset(res, 0, sizeof *res);
 }

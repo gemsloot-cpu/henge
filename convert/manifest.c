@@ -44,7 +44,8 @@ static void sb_json_str(struct sbuf *b, const char *s, size_t maxlen) {
 }
 
 char *hc_manifest_build(const struct elf_info *e, const struct henge_convert_opts *opts,
-                        const struct scan_result *scan) {
+                        const struct scan_result *scan, const struct henge_import *imports,
+                        size_t nimports) {
     const Elf64_Dyn *dyn = e->dyn;
     const char *dynstr = e->dynstr;
     uint64_t strsz = e->strsz;
@@ -78,7 +79,15 @@ char *hc_manifest_build(const struct elf_info *e, const struct henge_convert_opt
         sb_json_str(&b, dynstr + dyn[i].d_val, (size_t)(strsz - dyn[i].d_val));
         first = 0;
     }
-    sb_printf(&b, "],\n  \"svc_count\": %u,\n  \"tpidr_count\": %u\n}\n", scan->svc_count, scan->tpidr_count);
+    sb_printf(&b, "],\n  \"imports\": [");
+    for (size_t i = 0; i < nimports; i++) {
+        sb_printf(&b, "%s", i ? ", " : "");
+        sb_json_str(&b, imports[i].name, strlen(imports[i].name));
+    }
+    sb_printf(&b, "],\n  \"tls\": %s,\n", e->tls_ph ? "true" : "false");
+    sb_printf(&b, "  \"svc_count\": %u,\n  \"tpidr_count\": %u,\n", scan->svc_count, scan->tpidr_count);
+    sb_printf(&b, "  \"x18_count\": %u,\n  \"shadow_call_stack\": %s\n}\n", scan->x18_count,
+              scan->scs ? "true" : "false");
     if (b.oom) {
         free(b.p);
         return NULL;
