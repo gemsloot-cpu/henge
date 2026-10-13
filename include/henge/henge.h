@@ -14,6 +14,7 @@
 enum henge_platform {
     HENGE_PLATFORM_IOS = 2,   /* PLATFORM_IOS */
     HENGE_PLATFORM_MACOS = 1, /* PLATFORM_MACOS; used by tests on Apple Silicon Macs */
+    HENGE_PLATFORM_IOSSIM = 7, /* PLATFORM_IOSSIMULATOR; arm64 iOS Simulator on Apple Silicon */
 };
 
 struct henge_convert_opts {

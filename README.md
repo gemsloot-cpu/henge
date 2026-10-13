@@ -41,6 +41,24 @@ There is no code yet. M1 will create the following structure.
 | `samples/` | Test `.so` files built with the NDK |
 | `tests/` | Tests for the converter and mini linker (run on macOS) |
 
+## Building
+
+Requirements: Xcode, Android NDK r27+ (`NDK_ROOT`, defaults to `/opt/homebrew/share/android-ndk`), XcodeGen.
+
+```sh
+make test   # convert libadd.so and run it on macOS
+```
+
+Host app (iOS):
+
+```sh
+cp app/Local.xcconfig.example app/Local.xcconfig   # set your own DEVELOPMENT_TEAM and bundle ID prefix
+cd app && xcodegen
+open henge.xcodeproj
+```
+
+Each developer signs with their own Apple ID / certificate. `app/Local.xcconfig` is gitignored; never commit team IDs, certificates, or provisioning profiles.
+
 ## Notes
 
 - Try it with `.so` files you built yourself, or with open-source / free APKs.

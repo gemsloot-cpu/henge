@@ -1,0 +1,5 @@
+// Copy to Local.xcconfig (gitignored) and fill in your own values.
+// Team ID: the OU field of your "Apple Development" certificate, or Xcode > Settings > Accounts.
+
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+HENGE_BUNDLE_ID_PREFIX = com.yourname

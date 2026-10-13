@@ -145,7 +145,8 @@ int henge_convert(const uint8_t *elf, size_t elf_size, const struct henge_conver
 
     if (!opts || !opts->install_name || !*opts->install_name)
         return fail(err, errlen, "install name is required");
-    if (opts->platform != HENGE_PLATFORM_IOS && opts->platform != HENGE_PLATFORM_MACOS)
+    if (opts->platform != HENGE_PLATFORM_IOS && opts->platform != HENGE_PLATFORM_MACOS &&
+        opts->platform != HENGE_PLATFORM_IOSSIM)
         return fail(err, errlen, "unknown platform %d", (int)opts->platform);
 
     /* ---- 1. ELF header ---- */
@@ -379,7 +380,7 @@ int henge_convert(const uint8_t *elf, size_t elf_size, const struct henge_conver
     put(mo, &o, opts->install_name, strlen(opts->install_name));
     o = start + id_size; /* NUL + padding already zero */
 
-    uint32_t ver = opts->platform == HENGE_PLATFORM_IOS ? (16u << 16) : (13u << 16);
+    uint32_t ver = opts->platform == HENGE_PLATFORM_MACOS ? (13u << 16) : (16u << 16); /* macOS 13.0, else iOS 16.0 */
     struct build_version_command bv = {
         .cmd = LC_BUILD_VERSION,
         .cmdsize = sizeof(struct build_version_command),

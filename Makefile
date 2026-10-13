@@ -18,7 +18,7 @@ HEADERS      := $(wildcard include/henge/*.h) $(wildcard runtime/*.h)
 # Extra flags for the converter during tests (e.g. CONVERT_FLAGS=--libsystem).
 CONVERT_FLAGS ?=
 
-.PHONY: all samples tests test test-layout test-m1 clean
+.PHONY: all samples tests test test-layout test-m1 app-dylib clean
 
 all: $(B)/henge-convert $(B)/libhenge-runtime.a samples tests
 
@@ -68,6 +68,17 @@ test-m1: $(B)/tests/test_m1 $(B)/tests/libadd.dylib
 
 test: test-layout test-m1
 	@echo "ALL TESTS PASSED"
+
+# ---- iOS host app (app/) ----
+# Converted libadd.dylib for the app bundle. Left unsigned: Xcode embeds it into
+# Frameworks/ and signs it with the app's identity (CodeSignOnCopy).
+# PLATFORM=iossim (simulator) or ios (device). Called from the app's pre-build phase.
+PLATFORM ?= iossim
+
+app-dylib: $(B)/samples/libadd.so $(B)/henge-convert
+	@case "$(PLATFORM)" in iossim|ios) ;; *) echo "PLATFORM must be iossim or ios" >&2; exit 1;; esac
+	@mkdir -p $(B)/app
+	$(B)/henge-convert --platform $(PLATFORM) $(CONVERT_FLAGS) -m $(B)/app/libadd.manifest.json -o $(B)/app/libadd.dylib $<
 
 $(B):
 	@mkdir -p $(B)

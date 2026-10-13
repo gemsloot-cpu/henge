@@ -1,0 +1,7 @@
+// Shared build settings for the henge host app. Do not put personal values here.
+// Copy Local.xcconfig.example to Local.xcconfig (gitignored) and set your own team.
+
+DEVELOPMENT_TEAM =
+HENGE_BUNDLE_ID_PREFIX = com.example
+
+#include? "Local.xcconfig"

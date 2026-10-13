@@ -7,7 +7,7 @@
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: henge-convert [--platform ios|macos] [--install-name NAME] [--libsystem]\n"
+            "usage: henge-convert [--platform ios|iossim|macos] [--install-name NAME] [--libsystem]\n"
             "                     [-m manifest.json] -o out.dylib in.so\n");
     exit(2);
 }
@@ -54,6 +54,7 @@ int main(int argc, char **argv) {
             const char *p = argv[++i];
             if (!strcmp(p, "ios")) opts.platform = HENGE_PLATFORM_IOS;
             else if (!strcmp(p, "macos")) opts.platform = HENGE_PLATFORM_MACOS;
+            else if (!strcmp(p, "iossim")) opts.platform = HENGE_PLATFORM_IOSSIM;
             else { fprintf(stderr, "henge-convert: unknown platform '%s'\n", p); usage(); }
         } else if (!strcmp(a, "--install-name") && i + 1 < argc) {
             install_name = argv[++i];
