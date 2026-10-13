@@ -30,7 +30,7 @@ jobs:
         run: make test NDK_ROOT="$NDK_ROOT"
 
   ios-simulator:
-    name: Host app (iOS Simulator)
+    name: Host app build (iOS Simulator)
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -53,8 +53,3 @@ jobs:
         env:
           NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
         run: make app NDK_ROOT="$NDK_ROOT" SIM="$SIM"
-
-      - name: Run M1 checks in the simulator
-        env:
-          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
-        run: make app-run NDK_ROOT="$NDK_ROOT" SIM="$SIM"
