@@ -57,7 +57,7 @@ cd app && xcodegen && open henge.xcodeproj
 
 Each developer signs with their own Apple ID and certificate. `app/Local.xcconfig` is gitignored; never commit team IDs, certificates, or provisioning profiles.
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `make test` and the simulator self-test on every pull request.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `make test` and builds the host app for the simulator on every pull request.
 
 ## Repository layout
 
