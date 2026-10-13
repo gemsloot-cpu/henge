@@ -4,8 +4,7 @@
 
 #include "internal.h"
 
-/* Translate an ELF vaddr range to a file offset via the PT_LOADs. Returns 0 on success. */
-static int vaddr_to_off(const struct elf_info *e, uint64_t v, uint64_t len, uint64_t *off) {
+int hc_vaddr_to_off(const struct elf_info *e, uint64_t v, uint64_t len, uint64_t *off) {
     for (unsigned i = 0; i < e->nloads; i++) {
         const Elf64_Phdr *p = &e->loads[i];
         if (v >= p->p_vaddr && v - p->p_vaddr < p->p_filesz && len <= p->p_filesz - (v - p->p_vaddr)) {
@@ -40,6 +39,7 @@ int hc_elf_parse(struct elf_info *e, const uint8_t *elf, size_t elf_size, char *
     for (unsigned i = 0; i < e->eh->e_phnum; i++) {
         const Elf64_Phdr *p = &e->ph[i];
         if (p->p_type == PT_DYNAMIC) e->dyn_ph = p;
+        if (p->p_type == PT_TLS) e->tls_ph = p;
         if (p->p_type != PT_LOAD) continue;
         if (e->nloads == HC_MAX_LOADS) return hc_fail(err, errlen, "too many PT_LOAD segments (max %d)", HC_MAX_LOADS);
         if (p->p_offset > elf_size || p->p_filesz > elf_size - p->p_offset)
@@ -112,7 +112,7 @@ int hc_elf_parse(struct elf_info *e, const uint8_t *elf, size_t elf_size, char *
     }
     if (have_strtab) {
         uint64_t off;
-        if (e->strsz == 0 || vaddr_to_off(e, strtab, e->strsz, &off) != 0)
+        if (e->strsz == 0 || hc_vaddr_to_off(e, strtab, e->strsz, &off) != 0)
             return hc_fail(err, errlen, "DT_STRTAB/DT_STRSZ does not map to file data");
         e->dynstr = (const char *)elf + off;
     }

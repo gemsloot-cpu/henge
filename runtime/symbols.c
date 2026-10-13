@@ -77,12 +77,41 @@ const Elf64_Sym *hr_lookup_sym(const henge_image *im, const char *name)
     return NULL;
 }
 
+uintptr_t hr_sym_addr(const henge_image *im, const Elf64_Sym *s)
+{
+    uintptr_t a = im->base + s->st_value;
+    if (ELF64_ST_TYPE(s->st_info) == STT_GNU_IFUNC)
+        a = hr_call_ifunc(a);
+    return a;
+}
+
+uint64_t hr_symbol_count(const henge_image *im)
+{
+    if (im->hash)
+        return im->hash[1];
+    if (!im->gnu_hash)
+        return 0;
+    const uint32_t *h = im->gnu_hash;
+    uint32_t nbuckets = h[0], symoffset = h[1], bloom_size = h[2];
+    const uint32_t *buckets = (const uint32_t *)((const uint64_t *)(h + 4) + bloom_size);
+    const uint32_t *chain = buckets + nbuckets;
+    uint32_t max = 0;
+    for (uint32_t i = 0; i < nbuckets; i++)
+        if (buckets[i] > max)
+            max = buckets[i];
+    if (max < symoffset)
+        return symoffset;
+    while (!(chain[max - symoffset] & 1))
+        max++;
+    return (uint64_t)max + 1;
+}
+
 void *henge_dlsym(henge_image *image, const char *name)
 {
     if (!image || !name)
         return NULL;
     const Elf64_Sym *s = hr_lookup_sym(image, name);
-    return s ? (void *)(image->base + s->st_value) : NULL;
+    return s ? (void *)hr_sym_addr(image, s) : NULL;
 }
 
 /* Global lookup for an undefined symbol: shim first, then linked images in load order. */
@@ -96,7 +125,7 @@ int hr_resolve_global(const char *name, uintptr_t *out)
     for (henge_image *im = hr_images; im; im = im->next) {
         const Elf64_Sym *s = hr_lookup_sym(im, name);
         if (s) {
-            *out = im->base + s->st_value;
+            *out = hr_sym_addr(im, s);
             return 1;
         }
     }

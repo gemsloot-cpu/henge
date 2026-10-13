@@ -2,7 +2,9 @@
  *   test_layout in.so out.dylib [ios|macos]
  * Checks (docs/m1-elf-to-macho.md §3): __TEXT at vmaddr 0 / fileoff 0, r-x; every ELF
  * PT_LOAD's bytes appear at vmaddr p_vaddr + H; __DATA is rw- and starts at
- * rounddown(min writable vaddr) + H; LC_BUILD_VERSION platform; LC_ID_DYLIB present. */
+ * rounddown(min writable vaddr) + H; LC_BUILD_VERSION platform; LC_ID_DYLIB present;
+ * the embedded ad-hoc signature is well formed and its page hashes match the file. */
+#include <CommonCrypto/CommonDigest.h>
 #include <mach-o/loader.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -43,6 +45,46 @@ static unsigned char *slurp(const char *path, size_t *size) {
     fclose(f);
     *size = (size_t)n;
     return buf;
+}
+
+static uint32_t rd_be32(const unsigned char *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+/* Checks the SuperBlob at [off, off + size): CodeDirectory present, SHA-256, every code
+ * page hash matches the file, codeLimit == signature offset. */
+static void check_signature(const unsigned char *mo, size_t mo_size, uint32_t off, uint32_t size) {
+    if ((uint64_t)off + size > mo_size || size < 12) {
+        check(0, "code signature inside the file (dataoff 0x%x datasize 0x%x)", off, size);
+        return;
+    }
+    const unsigned char *sb = mo + off;
+    check(rd_be32(sb) == 0xfade0cc0u, "SuperBlob magic 0xfade0cc0 (0x%x)", rd_be32(sb));
+    uint32_t count = rd_be32(sb + 8);
+    const unsigned char *cd = NULL;
+    for (uint32_t i = 0; i < count && 12 + 8 * (i + 1) <= size; i++) {
+        uint32_t type = rd_be32(sb + 12 + 8 * i), at = rd_be32(sb + 16 + 8 * i);
+        if (type == 0 && at + 88 <= size) cd = sb + at;
+    }
+    check(cd != NULL && rd_be32(cd) == 0xfade0c02u, "CodeDirectory present");
+    if (!cd) return;
+    uint32_t hash_off = rd_be32(cd + 16), ident_off = rd_be32(cd + 20), ncode = rd_be32(cd + 28);
+    uint32_t limit = rd_be32(cd + 32);
+    unsigned hash_size = cd[36], hash_type = cd[37], page_log2 = cd[39];
+    printf("info  CodeDirectory v0x%x flags 0x%x ident \"%s\" ncode %u codeLimit 0x%x\n",
+           rd_be32(cd + 8), rd_be32(cd + 12), (const char *)cd + ident_off, ncode, limit);
+    check(hash_type == 2 && hash_size == 32, "CodeDirectory hash type SHA-256");
+    check(limit == off, "codeLimit 0x%x == signature offset 0x%x", limit, off);
+    uint32_t page = 1u << page_log2, bad = 0;
+    for (uint32_t i = 0; i < ncode; i++) {
+        uint64_t start = (uint64_t)i * page;
+        uint64_t n = limit - start < page ? limit - start : page;
+        unsigned char h[CC_SHA256_DIGEST_LENGTH];
+        CC_SHA256(mo + start, (CC_LONG)n, h);
+        if (memcmp(h, cd + hash_off + 32 * i, 32) != 0) bad++;
+    }
+    check(ncode == (limit + page - 1) / page && bad == 0, "%u code page hashes match the file (%u bad)",
+          ncode, bad);
 }
 
 static const char *prot_str(vm_prot_t p) {
@@ -97,6 +139,7 @@ int main(int argc, char **argv) {
 
     const struct segment_command_64 *text = NULL, *data = NULL, *linkedit = NULL;
     const struct build_version_command *bv = NULL;
+    const struct linkedit_data_command *codesig = NULL;
     int have_id = 0, have_chained = 0, have_libsystem = 0, have_codesig = 0;
     const unsigned char *lc = mo + sizeof *mh;
     uint64_t cmds_total = 0;
@@ -119,7 +162,7 @@ int main(int argc, char **argv) {
         case LC_BUILD_VERSION: bv = (const void *)c; break;
         case LC_ID_DYLIB: have_id = 1; break;
         case LC_DYLD_CHAINED_FIXUPS: have_chained = 1; break;
-        case LC_CODE_SIGNATURE: have_codesig = 1; break;
+        case LC_CODE_SIGNATURE: have_codesig = 1; codesig = (const void *)c; break;
         case LC_LOAD_DYLIB: {
             const struct dylib_command *d = (const void *)c;
             const char *name = (const char *)c + d->dylib.name.offset;
@@ -136,6 +179,7 @@ int main(int argc, char **argv) {
     check(cmds_total == mh->sizeofcmds, "sum of cmdsize over ncmds=%u == sizeofcmds (%llu vs %u)",
           mh->ncmds, (unsigned long long)cmds_total, mh->sizeofcmds);
     check(have_codesig, "LC_CODE_SIGNATURE present (dylib was signed)");
+    if (codesig) check_signature(mo, mo_size, codesig->dataoff, codesig->datasize);
     check(text != NULL, "__TEXT segment present");
     check(data != NULL, "__DATA segment present");
     check(linkedit != NULL, "__LINKEDIT segment present");
@@ -159,8 +203,14 @@ int main(int argc, char **argv) {
     check(data->vmaddr + data->vmsize >= max_w_end + H,
           "__DATA covers ELF RW end + H (0x%llx >= 0x%llx)", data->vmaddr + data->vmsize,
           max_w_end + H);
-    if (linkedit)
+    if (linkedit) {
         check(linkedit->vmaddr >= data->vmaddr + data->vmsize, "__LINKEDIT after __DATA");
+        check(linkedit->fileoff + linkedit->filesize == mo_size, "__LINKEDIT ends at end of file");
+        if (codesig)
+            check(codesig->dataoff >= linkedit->fileoff &&
+                      codesig->dataoff + codesig->datasize <= linkedit->fileoff + linkedit->filesize,
+                  "code signature inside __LINKEDIT");
+    }
     check(H + 4 <= mo_size && memcmp(mo + H, elf, 4) == 0, "ELF header bytes at file offset H");
 
     /* Every PT_LOAD's file bytes must sit at vmaddr p_vaddr + H; bss must be zero. */

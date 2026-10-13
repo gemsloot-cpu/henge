@@ -53,6 +53,19 @@ typedef struct {
 } Elf64_Rela;
 
 typedef struct {
+    uint32_t sh_name;
+    uint32_t sh_type;
+    uint64_t sh_flags;
+    uint64_t sh_addr;
+    uint64_t sh_offset;
+    uint64_t sh_size;
+    uint32_t sh_link;
+    uint32_t sh_info;
+    uint64_t sh_addralign;
+    uint64_t sh_entsize;
+} Elf64_Shdr;
+
+typedef struct {
     uint32_t n_namesz;
     uint32_t n_descsz;
     uint32_t n_type;
@@ -70,6 +83,9 @@ typedef struct {
 #define PT_PHDR 6
 #define PT_TLS 7
 #define PT_GNU_RELRO 0x6474e552
+
+#define SHT_PROGBITS 1
+#define SHF_EXECINSTR 0x4
 
 #define PF_X 1
 #define PF_W 2
@@ -114,6 +130,9 @@ typedef struct {
 #define STB_LOCAL 0
 #define STB_GLOBAL 1
 #define STB_WEAK 2
+#define STT_FUNC 2
+#define STT_TLS 6
+#define STT_GNU_IFUNC 10
 #define SHN_UNDEF 0
 #define ELF64_ST_BIND(i) ((i) >> 4)
 #define ELF64_ST_TYPE(i) ((i) & 0xf)
