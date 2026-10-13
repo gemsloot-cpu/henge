@@ -84,6 +84,7 @@ Since November 2025, Google Play has required 16 KiB page support for new apps a
 - Place converted dylibs in the app container (`Library/Application Support/henge/<package>/`) and sign them in place.
 - The host app and the dylibs share a Team ID, so they pass library validation.
 - Free Apple ID certificates expire after 7 days, but only the host app needs to be re-signed. Converted dylibs are re-signed with the same certificate (automatically when the host app launches).
+- Status: the built-in signer (`convert/sign.c`) produces ad-hoc signatures (CodeDirectory + empty requirements + empty CMS), which are enough for macOS and the iOS Simulator. Identity signing (the CMS blob with the user's certificate) is still TODO.
 
 ## 5. Loading and execution
 

@@ -9,7 +9,7 @@
 static void usage(void) {
     fprintf(stderr,
             "usage: henge-convert [--platform ios|iossim|macos] [--install-name NAME] [--libsystem]\n"
-            "                     [-m manifest.json] -o out.dylib in.so\n"
+            "                     [--sign] [-m manifest.json] -o out.dylib in.so\n"
             "       henge-convert --check in.so...   (compatibility report; writes nothing)\n");
     exit(2);
 }
@@ -102,6 +102,7 @@ static int check(int n, char **paths) {
 int main(int argc, char **argv) {
     struct henge_convert_opts opts = {.platform = HENGE_PLATFORM_IOS};
     const char *out_path = NULL, *manifest_path = NULL, *in_path = NULL, *install_name = NULL;
+    int sign = 0;
 
     if (argc > 1 && !strcmp(argv[1], "--check")) {
         if (argc < 3) usage();
@@ -120,6 +121,8 @@ int main(int argc, char **argv) {
             install_name = argv[++i];
         } else if (!strcmp(a, "--libsystem")) {
             opts.link_libsystem = 1;
+        } else if (!strcmp(a, "--sign")) {
+            sign = 1;
         } else if (!strcmp(a, "-m") && i + 1 < argc) {
             manifest_path = argv[++i];
         } else if (!strcmp(a, "-o") && i + 1 < argc) {
@@ -158,6 +161,24 @@ int main(int argc, char **argv) {
         return 1;
     }
     free(elf);
+
+    if (sign) {
+        /* Identifier: install name basename without extension (e.g. "libadd"). */
+        const char *b = strrchr(install_name, '/');
+        b = b ? b + 1 : install_name;
+        char ident[256];
+        snprintf(ident, sizeof ident, "%.*s", (int)strcspn(b, "."), b);
+        uint8_t *signed_mo;
+        size_t signed_size;
+        if (henge_sign_adhoc(res.macho, res.macho_size, ident, &signed_mo, &signed_size, err, sizeof err) != 0) {
+            fprintf(stderr, "henge-convert: %s: signing failed: %s\n", in_path, err);
+            henge_convert_result_free(&res);
+            return 1;
+        }
+        free(res.macho);
+        res.macho = signed_mo;
+        res.macho_size = signed_size;
+    }
 
     int rc = 0;
     if (write_file(out_path, res.macho, res.macho_size) != 0) { perror(out_path); rc = 1; }

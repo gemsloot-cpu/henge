@@ -113,13 +113,14 @@ $(B)/tests/test_layout: tests/test_layout.c $(PUBLIC_HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $< -o $@
 
-# Converted + ad-hoc signed dylib for the macOS tests. Always reconverted so
-# CONVERT_FLAGS changes take effect.
+# Converted dylib for the macOS tests, ad-hoc signed by henge-convert's built-in
+# signer and checked with Apple's codesign. Always reconverted so CONVERT_FLAGS
+# changes take effect.
 .PHONY: $(B)/tests/libadd.dylib
 $(B)/tests/libadd.dylib: $(B)/samples/libadd.so $(B)/henge-convert
 	@mkdir -p $(@D)
-	$(B)/henge-convert --platform macos $(CONVERT_FLAGS) -m $(B)/tests/libadd.manifest.json -o $@ $<
-	codesign -s - -f $@
+	$(B)/henge-convert --platform macos --sign $(CONVERT_FLAGS) -m $(B)/tests/libadd.manifest.json -o $@ $<
+	codesign -v $@
 
 .PHONY: $(B)/tests/libpatch.dylib
 $(B)/tests/libpatch.dylib: $(B)/samples/libpatch.so $(B)/henge-convert
